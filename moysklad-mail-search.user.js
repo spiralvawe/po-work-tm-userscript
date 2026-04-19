@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.10
+// @version      0.1.11
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -721,24 +721,85 @@
     );
   }
 
+  function isInternalSearchHeaderEmail(email) {
+    var normalizedEmail = String(email || '').trim().toLowerCase();
+    var domain = normalizedEmail.split('@')[1] || '';
+
+    return [
+      'sparrowssons.com',
+      'wiredtunes.pl',
+      'united-music.by',
+      'united-music.ru'
+    ].indexOf(domain) !== -1;
+  }
+
+  function isLikelyTransportSearchHeaderEmail(email) {
+    var normalizedEmail = String(email || '').trim().toLowerCase();
+    var domain = normalizedEmail.split('@')[1] || '';
+
+    return [
+      'dbschenker.com',
+      'schenker',
+      'dsv.com',
+      'dhl.com',
+      'ups.com',
+      'fedex.com',
+      'tnt.com',
+      'gls-',
+      'baz-log.com',
+      'cargoline',
+      'cargo'
+    ].some(function (hint) {
+      return domain.indexOf(hint) !== -1;
+    });
+  }
+
+  function isSavableSearchHeaderEmail(email) {
+    var normalizedEmail = String(email || '').trim().toLowerCase();
+    var localPart = normalizedEmail.split('@')[0] || '';
+
+    if (!normalizedEmail || normalizedEmail.indexOf('@') === -1) {
+      return false;
+    }
+
+    if (isInternalSearchHeaderEmail(normalizedEmail) || isLikelyTransportSearchHeaderEmail(normalizedEmail)) {
+      return false;
+    }
+
+    if (/@(?:e\.)?moysklad\.ru$/i.test(normalizedEmail)) {
+      return false;
+    }
+
+    if (/(^|[\W_])(no-?reply|noreply|postmaster|mailer-daemon|daemon|bounce|notification|notifications|robot|bot|do-not-reply)([\W_]|$)/i.test(localPart)) {
+      return false;
+    }
+
+    return true;
+  }
+
   function collectSearchSaveCandidateEmails(data) {
-    var suggestions = data && data.supplierEmailSuggestions;
-    var candidates = suggestions && Array.isArray(suggestions.candidates)
-      ? suggestions.candidates
-      : [];
-    var emails = candidates.length
-      ? candidates.map(function (candidate) {
-          return candidate && candidate.email;
-        })
-      : (suggestions && Array.isArray(suggestions.suggestedEmails) ? suggestions.suggestedEmails : []);
+    var emails = [];
     var seen = {};
+
+    if (data && Array.isArray(data.emails)) {
+      data.emails.forEach(function (thread) {
+        if (!thread || thread.threadCategory === 'transport') {
+          return;
+        }
+
+        emails = emails
+          .concat(normalizeRecipientList(thread.from || ''))
+          .concat(normalizeRecipientList(thread.to || ''))
+          .concat(normalizeRecipientList(thread.cc || ''));
+      });
+    }
 
     return emails
       .map(function (email) {
         return String(email || '').trim().toLowerCase();
       })
       .filter(function (email) {
-        if (!email || seen[email]) {
+        if (!email || seen[email] || !isSavableSearchHeaderEmail(email)) {
           return false;
         }
 
