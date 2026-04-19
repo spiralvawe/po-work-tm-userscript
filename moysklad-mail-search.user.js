@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.11
+// @version      0.1.12
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -833,6 +833,31 @@
     return html;
   }
 
+  function renderSearchEmailCard(email, settings, addableEmails) {
+    var fixedLink = forceGmailAccount(email.link, settings);
+    var html = '';
+
+    html += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff;">';
+    html += '<div style="font-weight:bold;font-size:14px;margin-bottom:8px;">' + escapeHtml(email.subject || '(без темы)') + '</div>';
+    html += renderSearchHeaderLine('От:', email.from || '', addableEmails);
+
+    if (email.to) {
+      html += renderSearchHeaderLine('Кому:', email.to, addableEmails);
+    }
+
+    if (email.cc) {
+      html += renderSearchHeaderLine('Копия:', email.cc, addableEmails);
+    }
+
+    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;"><b>Дата:</b> ' + escapeHtml(formatDate(email.date)) + '</div>';
+    html += '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;color:#222;">' + escapeHtml(email.snippet || '') + '</div>';
+    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;"><b>Сообщений в треде:</b> ' + escapeHtml(email.messageCount || '') + '</div>';
+    html += '<div><a href="' + escapeHtml(fixedLink) + '" target="_blank" style="color:#1976d2;text-decoration:none;font-weight:bold;">Открыть письмо</a></div>';
+    html += '</div>';
+
+    return html;
+  }
+
   function renderEmails(data, sourceLabel, settings) {
     var html = '';
     var suggestions = data && data.supplierEmailSuggestions;
@@ -840,6 +865,23 @@
       ? suggestions.suggestedEmails
       : [];
     var addableEmails = collectSearchSaveCandidateEmails(data);
+    var primaryEmails = data && Array.isArray(data.emailsPrimary)
+      ? data.emailsPrimary
+      : ((data && Array.isArray(data.emails)) ? data.emails.filter(function (email) {
+          return !email || email.threadCategory !== 'transport';
+        }) : []);
+    var transportEmails = data && Array.isArray(data.emailsTransport)
+      ? data.emailsTransport
+      : ((data && Array.isArray(data.emails)) ? data.emails.filter(function (email) {
+          return email && email.threadCategory === 'transport';
+        }) : []);
+    var primaryCount = data && data.countsByCategory && typeof data.countsByCategory.primary === 'number'
+      ? data.countsByCategory.primary
+      : primaryEmails.length;
+    var transportCount = data && data.countsByCategory && typeof data.countsByCategory.transport === 'number'
+      ? data.countsByCategory.transport
+      : transportEmails.length;
+    var defaultFilter = primaryCount > 0 ? 'primary' : (transportCount > 0 ? 'transport' : 'primary');
 
     if (!data || !data.success) {
       renderApiFailure(data, 'Письма по заказу');
@@ -896,35 +938,37 @@
       html += '</div>';
     }
 
-    if (!data.emails || !data.emails.length) {
+    if (!primaryCount && !transportCount) {
       html += '<div style="padding:10px 0;">Письма не найдены</div>';
       setPanelHtml(html, 'Письма по заказу', 'search');
       return;
     }
 
-    html += '<div style="margin-bottom:12px;color:#555;">Найдено писем: <b>' + escapeHtml(data.count) + '</b></div>';
+    html += '<div style="margin-bottom:12px;color:#555;">';
+    html += '<button class="tm-ms-search-filter-btn" data-filter="primary" type="button" style="border:none;background:none;padding:0;color:' + (defaultFilter === 'primary' ? '#1d4ed8' : '#1976d2') + ';cursor:pointer;font-size:14px;font-weight:' + (defaultFilter === 'primary' ? 'bold' : 'normal') + ';text-decoration:underline;">Писем по поставщику: ' + escapeHtml(primaryCount) + '</button>';
+    html += ', ';
+    html += '<button class="tm-ms-search-filter-btn" data-filter="transport" type="button" style="border:none;background:none;padding:0;color:' + (defaultFilter === 'transport' ? '#1d4ed8' : '#1976d2') + ';cursor:pointer;font-size:14px;font-weight:' + (defaultFilter === 'transport' ? 'bold' : 'normal') + ';text-decoration:underline;">писем по транспорту: ' + escapeHtml(transportCount) + '</button>';
+    html += '</div>';
 
-    data.emails.forEach(function (email) {
-      var fixedLink = forceGmailAccount(email.link, settings);
+    html += '<div class="tm-ms-search-email-group" data-email-category="primary" style="display:' + (defaultFilter === 'primary' ? 'block' : 'none') + ';">';
+    if (primaryEmails.length) {
+      primaryEmails.forEach(function (email) {
+        html += renderSearchEmailCard(email, settings, addableEmails);
+      });
+    } else {
+      html += '<div style="padding:10px 0;color:#666;">Писем по поставщику не найдено.</div>';
+    }
+    html += '</div>';
 
-      html += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff;">';
-      html += '<div style="font-weight:bold;font-size:14px;margin-bottom:8px;">' + escapeHtml(email.subject || '(без темы)') + '</div>';
-      html += renderSearchHeaderLine('От:', email.from || '', addableEmails);
-
-      if (email.to) {
-        html += renderSearchHeaderLine('Кому:', email.to, addableEmails);
-      }
-
-      if (email.cc) {
-        html += renderSearchHeaderLine('Копия:', email.cc, addableEmails);
-      }
-
-      html += '<div style="font-size:12px;color:#666;margin-bottom:10px;"><b>Дата:</b> ' + escapeHtml(formatDate(email.date)) + '</div>';
-      html += '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;color:#222;">' + escapeHtml(email.snippet || '') + '</div>';
-      html += '<div style="font-size:12px;color:#666;margin-bottom:10px;"><b>Сообщений в треде:</b> ' + escapeHtml(email.messageCount || '') + '</div>';
-      html += '<div><a href="' + escapeHtml(fixedLink) + '" target="_blank" style="color:#1976d2;text-decoration:none;font-weight:bold;">Открыть письмо</a></div>';
-      html += '</div>';
-    });
+    html += '<div class="tm-ms-search-email-group" data-email-category="transport" style="display:' + (defaultFilter === 'transport' ? 'block' : 'none') + ';">';
+    if (transportEmails.length) {
+      transportEmails.forEach(function (email) {
+        html += renderSearchEmailCard(email, settings, addableEmails);
+      });
+    } else {
+      html += '<div style="padding:10px 0;color:#666;">Писем по транспорту не найдено.</div>';
+    }
+    html += '</div>';
 
     setPanelHtml(html, 'Письма по заказу', 'search');
   }
@@ -1118,6 +1162,26 @@
     if (color) {
       element.style.color = color;
     }
+  }
+
+  function setSearchEmailFilter(activeFilter) {
+    var normalizedFilter = activeFilter === 'transport' ? 'transport' : 'primary';
+
+    Array.prototype.slice.call(
+      getPanelBody().querySelectorAll('.tm-ms-search-email-group')
+    ).forEach(function (group) {
+      var filter = String(group.getAttribute('data-email-category') || '').trim().toLowerCase();
+      group.style.display = filter === normalizedFilter ? 'block' : 'none';
+    });
+
+    Array.prototype.slice.call(
+      getPanelBody().querySelectorAll('.tm-ms-search-filter-btn')
+    ).forEach(function (button) {
+      var filter = String(button.getAttribute('data-filter') || '').trim().toLowerCase();
+      var isActive = filter === normalizedFilter;
+      button.style.color = isActive ? '#1d4ed8' : '#1976d2';
+      button.style.fontWeight = isActive ? 'bold' : 'normal';
+    });
   }
 
   function setPlacementStateButtonState(disabled, label) {
@@ -1454,6 +1518,14 @@
     });
   }
 
+  function attachSearchFilterHandlers() {
+    getPanelBody().querySelectorAll('.tm-ms-search-filter-btn').forEach(function (button) {
+      button.addEventListener('click', function () {
+        setSearchEmailFilter(button.getAttribute('data-filter'));
+      });
+    });
+  }
+
   async function onSearchSaveEmailClick(event) {
     var button = event && event.currentTarget;
     var email = button ? button.getAttribute('data-email') : '';
@@ -1631,6 +1703,7 @@
 
         renderEmails(prefetchResult.data, 'prefetch', settings);
         attachSearchEmailSaveHandlers();
+        attachSearchFilterHandlers();
         return;
       } catch (error) {
         renderError(
@@ -1661,6 +1734,7 @@
 
       renderEmails(result.data, 'manual', settings);
       attachSearchEmailSaveHandlers();
+      attachSearchFilterHandlers();
       setStatus('Ручной поиск завершен', 'ok', 'search');
 
       if (state.currentOrderId === orderId) {
