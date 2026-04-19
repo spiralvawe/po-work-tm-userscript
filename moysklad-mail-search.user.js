@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.8
+// @version      0.1.9
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -866,7 +866,7 @@
 
     if (useGmailSuggestions) {
       html += '<div style="border:1px solid #fdba74;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff7ed;">';
-      html += '<div style="font-weight:bold;color:#9a3412;margin-bottom:6px;">В карточке контрагента нет email</div>';
+      html += '<div style="font-weight:bold;color:#9a3412;margin-bottom:6px;">Suggestions из переписки: в карточке контрагента нет email</div>';
       html += '<div style="font-size:13px;color:#7c2d12;margin-bottom:10px;">Ниже адреса, найденные по истории переписки. Клик по адресу делает его основным email и подставляет первым в поле <b>Кому</b>.</div>';
       html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:' + (gmailSuggestionCandidates.length ? '10px' : '12px') + ';">';
 
@@ -901,6 +901,22 @@
 
     html += '<label style="display:block;font-size:12px;font-weight:bold;color:#555;margin-bottom:6px;">Кому</label>';
     html += '<textarea id="tm-ms-placement-to" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font:inherit;resize:vertical;margin-bottom:10px;">' + escapeHtml(recipients) + '</textarea>';
+
+    if (useGmailSuggestions && gmailSuggestedEmails.length) {
+      html += '<div style="margin:-2px 0 10px 0;padding:10px 12px;border:1px dashed #fdba74;border-radius:8px;background:#fffaf5;">';
+      html += '<div style="font-size:12px;font-weight:bold;color:#9a3412;margin-bottom:6px;">Найдено в переписке:</div>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
+
+      gmailSuggestedEmails.forEach(function (email) {
+        var isSelectedInline = selectedSuggestedEmail && selectedSuggestedEmail === String(email || '').trim().toLowerCase();
+        html += '<button class="tm-ms-placement-suggested-email-btn" data-email="' + escapeHtml(email) + '" type="button" style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;border:1px solid ' + (isSelectedInline ? '#9a3412' : '#fdba74') + ';background:' + (isSelectedInline ? '#c2410c' : '#ffedd5') + ';color:' + (isSelectedInline ? '#fff' : '#9a3412') + ';font-size:12px;font-weight:bold;cursor:pointer;">' + escapeHtml(isSelectedInline ? 'Основной: ' + email : email) + '</button>';
+      });
+
+      html += '</div>';
+      html += '<div style="font-size:11px;color:#7c2d12;margin-top:6px;">Клик по адресу делает его основным получателем для размещения.</div>';
+      html += '</div>';
+    }
+
     html += '<div style="font-size:12px;color:#666;margin:-4px 0 10px 0;">Можно удалить лишние адреса перед отправкой или сохранением черновика.</div>';
     html += '<label style="display:block;font-size:12px;font-weight:bold;color:#555;margin-bottom:6px;">Тема</label>';
     html += '<input id="tm-ms-placement-subject" type="text" value="' + escapeHtml(subject) + '" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font:inherit;margin-bottom:10px;" />';
