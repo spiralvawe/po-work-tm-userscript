@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.4
+// @version      0.1.5
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -44,6 +44,7 @@
     placementMetaResult: null,
     placementMetaError: null,
     lastPlacementDownloadUrl: '',
+    placementDraftId: '',
     placementEmailSent: false,
     isPanelOpen: false,
     activePanelMode: 'search'
@@ -373,6 +374,38 @@
         action: 'placeSend',
         token: settings.userToken,
         id: orderId,
+        to: payload.to,
+        subject: payload.subject,
+        body: payload.body
+      })
+    });
+    var text = await response.text();
+    var trimmed = text.trim();
+    var isJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+
+    return {
+      ok: isJson,
+      status: response.status,
+      requestUrl: APP_CONFIG.GAS_URL,
+      text: text,
+      data: isJson ? JSON.parse(trimmed) : null
+    };
+  }
+
+  async function savePlacementDraft(orderId, settings, payload) {
+    var response = await fetch(APP_CONFIG.GAS_URL, {
+      method: 'POST',
+      redirect: 'follow',
+      credentials: 'omit',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: JSON.stringify({
+        action: 'placeDraft',
+        token: settings.userToken,
+        id: orderId,
+        draftId: payload.draftId,
         to: payload.to,
         subject: payload.subject,
         body: payload.body
@@ -727,6 +760,8 @@
     var attachmentFileName = String((data && data.attachmentFileName) || 'PO.xls');
     var statusButtonDisabled = !state.placementEmailSent;
     var sendButtonDisabled = state.placementEmailSent;
+    var draftButtonDisabled = state.placementEmailSent;
+    var draftButtonLabel = state.placementDraftId ? 'Обновить черновик' : 'Сохранить черновик';
     var html = '';
 
     if (!data || !data.success) {
@@ -761,7 +796,7 @@
     html += '<div style="font-weight:bold;margin-bottom:8px;">2. Подготовить письмо</div>';
     html += '<label style="display:block;font-size:12px;font-weight:bold;color:#555;margin-bottom:6px;">Кому</label>';
     html += '<textarea id="tm-ms-placement-to" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font:inherit;resize:vertical;margin-bottom:10px;">' + escapeHtml(recipients) + '</textarea>';
-    html += '<div style="font-size:12px;color:#666;margin:-4px 0 10px 0;">Можно удалить лишние адреса перед открытием черновика.</div>';
+    html += '<div style="font-size:12px;color:#666;margin:-4px 0 10px 0;">Можно удалить лишние адреса перед отправкой или сохранением черновика.</div>';
     html += '<label style="display:block;font-size:12px;font-weight:bold;color:#555;margin-bottom:6px;">Тема</label>';
     html += '<input id="tm-ms-placement-subject" type="text" value="' + escapeHtml(subject) + '" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font:inherit;margin-bottom:10px;" />';
     html += '<label style="display:block;font-size:12px;font-weight:bold;color:#555;margin-bottom:6px;">Текст</label>';
@@ -769,10 +804,13 @@
     html += '</section>';
 
     html += '<section style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fff;">';
-    html += '<div style="font-weight:bold;margin-bottom:8px;">3. Отправить письмо</div>';
-    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;">Письмо уйдет через Apps Script от имени того Gmail-аккаунта, под которым сейчас работает этот скрипт.</div>';
+    html += '<div style="font-weight:bold;margin-bottom:8px;">3. Отправить или сохранить черновик</div>';
+    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;">Письмо уйдет через Apps Script от имени того Gmail-аккаунта, под которым сейчас работает этот скрипт. Вместо отправки можно сначала сохранить полноценный черновик в Gmail.</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
     html += '<button id="tm-ms-placement-send-btn" type="button" ' + (sendButtonDisabled ? 'disabled ' : '') + 'style="padding:9px 12px;border:none;border-radius:8px;background:#15803d;color:#fff;cursor:' + (sendButtonDisabled ? 'default' : 'pointer') + ';font-weight:bold;opacity:' + (sendButtonDisabled ? '0.7' : '1') + ';">' + (sendButtonDisabled ? 'Письмо отправлено' : 'Отправить письмо') + '</button>';
-    html += '<div id="tm-ms-placement-send-note" style="margin-top:10px;font-size:12px;color:#555;">' + escapeHtml(sendButtonDisabled ? 'Письмо уже отправлено в этой сессии. Можно подтверждать статус.' : 'Проверь получателей, тему, текст и вложение перед отправкой.') + '</div>';
+    html += '<button id="tm-ms-placement-draft-btn" type="button" ' + (draftButtonDisabled ? 'disabled ' : '') + 'style="padding:9px 12px;border:1px solid #1d4ed8;border-radius:8px;background:#eff6ff;color:#1d4ed8;cursor:' + (draftButtonDisabled ? 'default' : 'pointer') + ';font-weight:bold;opacity:' + (draftButtonDisabled ? '0.7' : '1') + ';">' + escapeHtml(draftButtonLabel) + '</button>';
+    html += '</div>';
+    html += '<div id="tm-ms-placement-send-note" style="margin-top:10px;font-size:12px;color:#555;">' + escapeHtml(sendButtonDisabled ? 'Письмо уже отправлено в этой сессии. Можно подтверждать статус.' : 'Проверь получателей, тему, текст и вложение перед отправкой или сохранением черновика.') + '</div>';
     html += '</section>';
 
     html += '<section style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fff;">';
@@ -788,6 +826,7 @@
 
     getPanelBody().querySelector('#tm-ms-placement-download-btn').addEventListener('click', onPlacementDownloadClick);
     getPanelBody().querySelector('#tm-ms-placement-send-btn').addEventListener('click', onPlacementSendEmailClick);
+    getPanelBody().querySelector('#tm-ms-placement-draft-btn').addEventListener('click', onPlacementSaveDraftClick);
     getPanelBody().querySelector('#tm-ms-placement-state-btn').addEventListener('click', onPlacementSetStateClick);
   }
 
@@ -802,6 +841,7 @@
     state.placementMetaResult = null;
     state.placementMetaError = null;
     state.lastPlacementDownloadUrl = '';
+    state.placementDraftId = '';
     state.placementEmailSent = false;
   }
 
@@ -849,6 +889,26 @@
     if (label) {
       button.textContent = label;
     }
+  }
+
+  function setPlacementDraftButtonState(disabled, label) {
+    var button = getPanelBody().querySelector('#tm-ms-placement-draft-btn');
+
+    if (!button) {
+      return;
+    }
+
+    button.disabled = Boolean(disabled);
+    button.style.opacity = disabled ? '0.7' : '1';
+    button.style.cursor = disabled ? 'default' : 'pointer';
+
+    if (label) {
+      button.textContent = label;
+    }
+  }
+
+  function getPlacementDraftButtonLabel() {
+    return state.placementDraftId ? 'Обновить черновик' : 'Сохранить черновик';
   }
 
   function updatePlacementStateValue(text) {
@@ -1210,6 +1270,7 @@
     }
 
     setPlacementSendButtonState(true, 'Отправляю...');
+    setPlacementDraftButtonState(true, getPlacementDraftButtonLabel());
     setPlacementMessage('#tm-ms-placement-send-note', 'Отправляю письмо через Apps Script...', '#92400e');
     setStatus('Отправляю письмо...', 'loading', 'placement');
 
@@ -1222,6 +1283,7 @@
 
       if (!result.ok) {
         setPlacementSendButtonState(false, 'Отправить письмо');
+        setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
         renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Размещение PO');
         setStatus('Отправка письма: ошибка', 'error', 'placement');
         return;
@@ -1229,6 +1291,7 @@
 
       if (!result.data || !result.data.success) {
         setPlacementSendButtonState(false, 'Отправить письмо');
+        setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
         setPlacementMessage(
           '#tm-ms-placement-send-note',
           escapeHtml((result.data && result.data.error) || 'Не удалось отправить письмо'),
@@ -1240,6 +1303,7 @@
 
       state.placementEmailSent = true;
       setPlacementSendButtonState(true, 'Письмо отправлено');
+      setPlacementDraftButtonState(true, 'Черновик не нужен');
       setPlacementStateButtonState(false, 'Поставить статус "Размещен"');
       setPlacementMessage(
         '#tm-ms-placement-send-note',
@@ -1254,12 +1318,103 @@
       setStatus('Письмо отправлено', 'ok', 'placement');
     } catch (error) {
       setPlacementSendButtonState(false, 'Отправить письмо');
+      setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
       setPlacementMessage(
         '#tm-ms-placement-send-note',
         escapeHtml(error && error.message ? error.message : String(error)),
         '#991b1b'
       );
       setStatus('Отправка письма: ошибка', 'error', 'placement');
+    }
+  }
+
+  async function onPlacementSaveDraftClick() {
+    var settings = ensureUserSettings();
+    var fields;
+    var recipients;
+    var orderId = getOrderIdFromUrl();
+    var result;
+
+    if (!orderId || !settings) {
+      renderSettingsRequired('размещения PO');
+      setStatus('Нужно заполнить настройки', 'error', 'placement');
+      return;
+    }
+
+    fields = getPlacementDraftFields();
+    recipients = normalizeRecipientList(fields.to && fields.to.value);
+
+    if (!recipients.length) {
+      setPlacementMessage('#tm-ms-placement-send-note', 'Добавь хотя бы один email получателя.', '#991b1b');
+      setStatus('Черновик: нет получателей', 'error', 'placement');
+      if (fields.to) {
+        fields.to.focus();
+      }
+      return;
+    }
+
+    if (fields.to) {
+      fields.to.value = recipients.join(', ');
+    }
+
+    setPlacementDraftButtonState(true, 'Сохраняю...');
+    setPlacementSendButtonState(true, 'Отправить письмо');
+    setPlacementMessage('#tm-ms-placement-send-note', 'Сохраняю черновик в Gmail через Apps Script...', '#92400e');
+    setStatus('Сохраняю черновик...', 'loading', 'placement');
+
+    try {
+      result = await savePlacementDraft(orderId, settings, {
+        draftId: state.placementDraftId,
+        to: recipients,
+        subject: fields.subject ? fields.subject.value : '',
+        body: fields.body ? fields.body.value : ''
+      });
+
+      if (!result.ok) {
+        setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
+        setPlacementSendButtonState(false, 'Отправить письмо');
+        renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Размещение PO');
+        setStatus('Сохранение черновика: ошибка', 'error', 'placement');
+        return;
+      }
+
+      if (!result.data || !result.data.success) {
+        setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
+        setPlacementSendButtonState(false, 'Отправить письмо');
+        setPlacementMessage(
+          '#tm-ms-placement-send-note',
+          escapeHtml((result.data && result.data.error) || 'Не удалось сохранить черновик'),
+          '#991b1b'
+        );
+        setStatus('Сохранение черновика: ошибка', 'error', 'placement');
+        return;
+      }
+
+      state.placementDraftId = result.data.draftId || state.placementDraftId;
+      setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
+      setPlacementSendButtonState(false, 'Отправить письмо');
+      setPlacementMessage(
+        '#tm-ms-placement-send-note',
+        result.data.updatedExisting
+          ? 'Черновик обновлен в Gmail. Статус пока не менялся; после проверки можно отправить письмо отсюда или из папки Черновики.'
+          : 'Черновик сохранен в Gmail. Статус пока не менялся; после проверки можно отправить письмо отсюда или из папки Черновики.',
+        '#166534'
+      );
+      setPlacementMessage(
+        '#tm-ms-placement-state-note',
+        'Сохранение черновика не меняет статус. Для статуса нужно именно отправить письмо.',
+        '#92400e'
+      );
+      setStatus('Черновик сохранен', 'ok', 'placement');
+    } catch (error) {
+      setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
+      setPlacementSendButtonState(false, 'Отправить письмо');
+      setPlacementMessage(
+        '#tm-ms-placement-send-note',
+        escapeHtml(error && error.message ? error.message : String(error)),
+        '#991b1b'
+      );
+      setStatus('Сохранение черновика: ошибка', 'error', 'placement');
     }
   }
 
