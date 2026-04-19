@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.3
+// @version      0.1.4
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -391,6 +391,13 @@
     };
   }
 
+  var SEARCH_STATUS_BORDER_COLORS = {
+    loading: '#eab308',
+    ok: '#16a34a',
+    error: '#dc2626'
+  };
+  var PLACEMENT_CONFIRMED_BORDER_COLOR = '#9664bf';
+
   function applyFloatingButtonStyles(button, options) {
     var styleOptions = options || {};
 
@@ -458,84 +465,35 @@
     return button;
   }
 
-  function createStatusBadge() {
-    var badge = document.getElementById(APP_CONFIG.STATUS_ID);
-    if (badge) {
-      return badge;
-    }
-
-    badge = document.createElement('div');
-    badge.id = APP_CONFIG.STATUS_ID;
-    badge.style.position = 'fixed';
-    badge.style.top = '70px';
-    badge.style.right = '300px';
-    badge.style.zIndex = '999999';
-    badge.style.padding = '8px 10px';
-    badge.style.background = '#f3f4f6';
-    badge.style.color = '#374151';
-    badge.style.border = '1px solid #d1d5db';
-    badge.style.borderRadius = '8px';
-    badge.style.fontSize = '12px';
-    badge.style.fontFamily = 'Arial, sans-serif';
-    badge.style.display = 'none';
-    document.body.appendChild(badge);
-
-    return badge;
+  function getPlacementButtonBorderColor() {
+    return createPlacementButton().style.display === 'none'
+      ? 'transparent'
+      : PLACEMENT_CONFIRMED_BORDER_COLOR;
   }
 
   function resetActionButtonBorders() {
-    [createSearchButton(), createPlacementButton()].forEach(function (button) {
-      button.style.borderColor = 'transparent';
-    });
+    createSearchButton().style.borderColor = 'transparent';
+    createPlacementButton().style.borderColor = getPlacementButtonBorderColor();
   }
 
   function setStatus(text, mode, buttonKey, options) {
-    var badge = createStatusBadge();
+    var badge = document.getElementById(APP_CONFIG.STATUS_ID);
     var targetButton = buttonKey === 'placement' ? createPlacementButton() : createSearchButton();
-    var statusOptions = options || {};
     var statusMode = mode || 'neutral';
-    var showBadge = statusOptions.showBadge !== false;
 
     resetActionButtonBorders();
-    badge.style.display = showBadge && text ? 'block' : 'none';
-    badge.textContent = showBadge ? text || '' : '';
+    if (badge) {
+      badge.style.display = 'none';
+      badge.textContent = '';
+    }
 
-    if (statusMode === 'loading') {
-      targetButton.style.borderColor = '#eab308';
-      if (!showBadge) {
-        return;
-      }
-      badge.style.background = '#fef3c7';
-      badge.style.color = '#92400e';
-      badge.style.borderColor = '#fcd34d';
+    if (buttonKey !== 'search') {
       return;
     }
 
-    if (statusMode === 'ok') {
-      targetButton.style.borderColor = '#16a34a';
-      if (!showBadge) {
-        return;
-      }
-      badge.style.background = '#dcfce7';
-      badge.style.color = '#166534';
-      badge.style.borderColor = '#86efac';
-      return;
+    if (SEARCH_STATUS_BORDER_COLORS[statusMode]) {
+      targetButton.style.borderColor = SEARCH_STATUS_BORDER_COLORS[statusMode];
     }
-
-    if (statusMode === 'error') {
-      targetButton.style.borderColor = '#dc2626';
-      if (!showBadge) {
-        return;
-      }
-      badge.style.background = '#fee2e2';
-      badge.style.color = '#991b1b';
-      badge.style.borderColor = '#fca5a5';
-      return;
-    }
-
-    badge.style.background = '#f3f4f6';
-    badge.style.color = '#374151';
-    badge.style.borderColor = '#d1d5db';
   }
 
   function createPanel() {
@@ -636,7 +594,10 @@
   }
 
   function setPlacementButtonVisible(isVisible) {
-    createPlacementButton().style.display = isVisible ? 'block' : 'none';
+    var button = createPlacementButton();
+
+    button.style.display = isVisible ? 'block' : 'none';
+    button.style.borderColor = isVisible ? PLACEMENT_CONFIRMED_BORDER_COLOR : 'transparent';
   }
 
   function renderError(title, detailsHtml, panelTitle) {
@@ -990,9 +951,7 @@
     }
 
     state.searchPrefetchStartedAt = Date.now();
-    setStatus('Фоновый поиск писем...', 'loading', 'search', {
-      showBadge: false
-    });
+    setStatus('Фоновый поиск писем...', 'loading', 'search');
 
     state.searchPrefetchPromise = fetchSearchData(orderId, settings, {
       skipLog: true,
@@ -1007,9 +966,7 @@
         state.searchPrefetchError = null;
 
         if (result.ok && result.data && result.data.success) {
-          setStatus('Фоновый поиск готов', 'ok', 'search', {
-            showBadge: false
-          });
+          setStatus('Фоновый поиск готов', 'ok', 'search');
         } else if (result.ok && result.data && !result.data.success) {
           setStatus('Фоновый поиск: ошибка', 'error', 'search');
         } else {
@@ -1114,6 +1071,7 @@
     var orderId = getOrderIdFromUrl();
     var settings;
     var result;
+    var hasPlacementPrefetch;
 
     if (!orderId) {
       renderError('Ошибка', '<div>Не удалось определить ID заказа из URL</div>', 'Размещение PO');
@@ -1127,13 +1085,17 @@
       return;
     }
 
-    setPanelHtml('<div>Загружаю данные размещения...</div>', 'Размещение PO', 'placement');
-    setStatus('Загружаю размещение...', 'loading', 'placement');
+    hasPlacementPrefetch =
+      state.currentOrderId === orderId &&
+      Boolean(state.placementMetaResult || state.placementMetaPromise);
+
+    if (!hasPlacementPrefetch) {
+      setPanelHtml('<div>Загружаю данные размещения...</div>', 'Размещение PO', 'placement');
+      setStatus('Загружаю размещение...', 'loading', 'placement');
+    }
 
     try {
-      result = await loadPlacementMeta(orderId, settings, {
-        forceRefresh: true
-      });
+      result = await loadPlacementMeta(orderId, settings);
 
       if (!result.ok) {
         renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Размещение PO');
@@ -1142,7 +1104,7 @@
       }
 
       renderPlacementPanel(result.data);
-      setStatus(result.data && result.data.success && result.data.canPlace ? 'Размещение готово' : 'Размещение недоступно', result.data && result.data.success && result.data.canPlace ? 'ok' : 'error', 'placement');
+      setStatus('', result.data && result.data.success && result.data.canPlace ? 'ok' : 'error', 'placement');
     } catch (error) {
       renderError(
         'Ошибка запроса к Apps Script',
@@ -1393,7 +1355,6 @@
     var settings;
 
     createPlacementButton();
-    createStatusBadge();
 
     if (isPurchaseOrderPage()) {
       searchButton.style.display = 'block';
@@ -1431,7 +1392,6 @@
     createSearchButton();
     createPlacementButton();
     createPanel();
-    createStatusBadge();
     registerMenuCommands();
     updateVisibilityAndPrefetch();
 
