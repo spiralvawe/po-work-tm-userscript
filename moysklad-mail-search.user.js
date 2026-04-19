@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.9
+// @version      0.1.10
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -424,7 +424,7 @@
     };
   }
 
-  async function savePlacementCounterpartyEmails(orderId, settings, payload) {
+  async function saveSupplierEmailsToMoySklad(orderId, settings, payload) {
     var response = await fetch(APP_CONFIG.GAS_URL, {
       method: 'POST',
       redirect: 'follow',
@@ -451,6 +451,10 @@
       text: text,
       data: isJson ? JSON.parse(trimmed) : null
     };
+  }
+
+  async function savePlacementCounterpartyEmails(orderId, settings, payload) {
+    return saveSupplierEmailsToMoySklad(orderId, settings, payload);
   }
 
   var SEARCH_STATUS_BORDER_COLORS = {
@@ -717,12 +721,64 @@
     );
   }
 
+  function collectSearchSaveCandidateEmails(data) {
+    var suggestions = data && data.supplierEmailSuggestions;
+    var candidates = suggestions && Array.isArray(suggestions.candidates)
+      ? suggestions.candidates
+      : [];
+    var emails = candidates.length
+      ? candidates.map(function (candidate) {
+          return candidate && candidate.email;
+        })
+      : (suggestions && Array.isArray(suggestions.suggestedEmails) ? suggestions.suggestedEmails : []);
+    var seen = {};
+
+    return emails
+      .map(function (email) {
+        return String(email || '').trim().toLowerCase();
+      })
+      .filter(function (email) {
+        if (!email || seen[email]) {
+          return false;
+        }
+
+        seen[email] = true;
+        return true;
+      });
+  }
+
+  function renderSearchHeaderLine(label, rawValue, addableEmails) {
+    var normalizedValue = String(rawValue || '').trim();
+    var headerEmails = normalizeRecipientList(normalizedValue);
+    var actionableEmails = headerEmails.filter(function (email) {
+      return addableEmails.indexOf(email) !== -1;
+    });
+    var html = '<div style="font-size:12px;color:#666;margin-bottom:6px;"><b>' + escapeHtml(label) + '</b> ' + escapeHtml(normalizedValue) + '</div>';
+
+    if (!actionableEmails.length) {
+      return html;
+    }
+
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px 10px;margin:-2px 0 8px 38px;">';
+
+    actionableEmails.forEach(function (email) {
+      html += '<span style="display:inline-flex;align-items:center;gap:6px;">';
+      html += '<span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;font-size:12px;font-weight:bold;">' + escapeHtml(email) + '</span>';
+      html += '<button class="tm-ms-search-save-email-btn" data-email="' + escapeHtml(email) + '" type="button" style="border:none;background:none;padding:0;color:#1976d2;cursor:pointer;font-size:12px;font-weight:bold;text-decoration:underline;">добавить email в МС</button>';
+      html += '</span>';
+    });
+
+    html += '</div>';
+    return html;
+  }
+
   function renderEmails(data, sourceLabel, settings) {
     var html = '';
     var suggestions = data && data.supplierEmailSuggestions;
     var suggestionEmails = suggestions && Array.isArray(suggestions.suggestedEmails)
       ? suggestions.suggestedEmails
       : [];
+    var addableEmails = collectSearchSaveCandidateEmails(data);
 
     if (!data || !data.success) {
       renderApiFailure(data, 'Письма по заказу');
@@ -752,6 +808,7 @@
     }
 
     html += '</div>';
+    html += '<div id="tm-ms-search-save-note" style="margin:-4px 0 12px 0;font-size:12px;color:#555;"></div>';
 
     if (suggestionEmails.length) {
       html += '<div style="border:1px solid #fdba74;border-radius:10px;padding:12px;margin-bottom:14px;background:#fff7ed;">';
@@ -791,14 +848,14 @@
 
       html += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff;">';
       html += '<div style="font-weight:bold;font-size:14px;margin-bottom:8px;">' + escapeHtml(email.subject || '(без темы)') + '</div>';
-      html += '<div style="font-size:12px;color:#666;margin-bottom:6px;"><b>От:</b> ' + escapeHtml(email.from || '') + '</div>';
+      html += renderSearchHeaderLine('От:', email.from || '', addableEmails);
 
       if (email.to) {
-        html += '<div style="font-size:12px;color:#666;margin-bottom:6px;"><b>Кому:</b> ' + escapeHtml(email.to) + '</div>';
+        html += renderSearchHeaderLine('Кому:', email.to, addableEmails);
       }
 
       if (email.cc) {
-        html += '<div style="font-size:12px;color:#666;margin-bottom:6px;"><b>Копия:</b> ' + escapeHtml(email.cc) + '</div>';
+        html += renderSearchHeaderLine('Копия:', email.cc, addableEmails);
       }
 
       html += '<div style="font-size:12px;color:#666;margin-bottom:10px;"><b>Дата:</b> ' + escapeHtml(formatDate(email.date)) + '</div>';
@@ -888,14 +945,14 @@
       }
 
       html += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">';
-      html += '<button id="tm-ms-placement-save-counterparty-btn" type="button" style="padding:9px 12px;border:1px solid #c2410c;border-radius:8px;background:#fff;color:#9a3412;cursor:pointer;font-weight:bold;">Добавить в карточку контрагента</button>';
+      html += '<button id="tm-ms-placement-save-counterparty-btn" type="button" style="padding:9px 12px;border:1px solid #c2410c;border-radius:8px;background:#fff;color:#9a3412;cursor:pointer;font-weight:bold;">Добавить email в МойСклад</button>';
 
       if (data.counterpartyLink) {
         html += '<a href="' + escapeHtml(data.counterpartyLink) + '" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#9a3412;text-decoration:none;font-weight:bold;">Открыть контрагента</a>';
       }
 
       html += '</div>';
-      html += '<div id="tm-ms-placement-suggestion-note" style="margin-top:10px;font-size:12px;color:#7c2d12;">Один клик добавит текущий список получателей в поле email контрагента.</div>';
+      html += '<div id="tm-ms-placement-suggestion-note" style="margin-top:10px;font-size:12px;color:#7c2d12;">Если поле email контрагента пустое, адреса попадут туда. Если уже занято, адреса сохранятся в контактное лицо.</div>';
       html += '</div>';
     }
 
@@ -988,6 +1045,20 @@
     }
   }
 
+  function setSearchSaveMessage(html, color) {
+    var element = getPanelBody().querySelector('#tm-ms-search-save-note');
+
+    if (!element) {
+      return;
+    }
+
+    element.innerHTML = html || '';
+
+    if (color) {
+      element.style.color = color;
+    }
+  }
+
   function setPlacementStateButtonState(disabled, label) {
     var button = getPanelBody().querySelector('#tm-ms-placement-state-btn');
 
@@ -1052,8 +1123,34 @@
     }
   }
 
+  function getSearchSaveEmailButtons(targetEmail) {
+    var normalizedTargetEmail = String(targetEmail || '').trim().toLowerCase();
+
+    return Array.prototype.slice.call(
+      getPanelBody().querySelectorAll('.tm-ms-search-save-email-btn')
+    ).filter(function (button) {
+      return String(button.getAttribute('data-email') || '').trim().toLowerCase() === normalizedTargetEmail;
+    });
+  }
+
+  function setSearchSaveEmailButtonState(targetEmail, disabled, label) {
+    getSearchSaveEmailButtons(targetEmail).forEach(function (button) {
+      button.disabled = Boolean(disabled);
+      button.style.opacity = disabled ? '0.7' : '1';
+      button.style.cursor = disabled ? 'default' : 'pointer';
+
+      if (label) {
+        button.textContent = label;
+      }
+    });
+  }
+
   function getPlacementDraftButtonLabel() {
     return state.placementDraftId ? 'Обновить черновик' : 'Сохранить черновик';
+  }
+
+  function getPlacementMoySkladSaveButtonLabel() {
+    return 'Добавить email в МойСклад';
   }
 
   function updatePlacementStateValue(text) {
@@ -1070,6 +1167,25 @@
     }
 
     setPlacementButtonVisible(Boolean(result && result.ok && result.data && result.data.success && result.data.canPlace));
+  }
+
+  function syncSavedSupplierEmailsState(resultData) {
+    var savedEmails = Array.isArray(resultData && resultData.emails) ? resultData.emails.slice() : [];
+
+    if (state.placementMetaResult && state.placementMetaResult.data) {
+      state.placementMetaResult.data.emails = savedEmails.slice();
+      state.placementMetaResult.data.counterpartyEmail = resultData.counterpartyEmail || '';
+      state.placementMetaResult.data.counterpartyFieldEmails = Array.isArray(resultData.counterpartyFieldEmails)
+        ? resultData.counterpartyFieldEmails.slice()
+        : [];
+      state.placementMetaResult.data.contactPersonEmails = Array.isArray(resultData.contactPersonEmails)
+        ? resultData.contactPersonEmails.slice()
+        : [];
+      state.placementMetaResult.data.prefillEmails = savedEmails.slice();
+      state.placementMetaResult.data.useGmailSuggestions = false;
+      state.placementMetaResult.data.gmailSuggestionCandidates = [];
+      state.placementMetaResult.data.gmailSuggestedEmails = [];
+    }
   }
 
   function requestPlacementMeta(orderId, settings) {
@@ -1271,6 +1387,102 @@
     applyPlacementSuggestedEmail(email);
   }
 
+  function attachSearchEmailSaveHandlers() {
+    getPanelBody().querySelectorAll('.tm-ms-search-save-email-btn').forEach(function (button) {
+      button.addEventListener('click', onSearchSaveEmailClick);
+    });
+  }
+
+  async function onSearchSaveEmailClick(event) {
+    var button = event && event.currentTarget;
+    var email = button ? button.getAttribute('data-email') : '';
+    var normalizedEmail = String(email || '').trim().toLowerCase();
+    var orderId = getOrderIdFromUrl();
+    var settings = ensureUserSettings();
+    var result;
+    var linkHtml = '';
+    var locationLabel = 'МойСклад';
+    var message = '';
+
+    if (!orderId || !settings) {
+      renderSettingsRequired('сохранения email в МойСклад');
+      setStatus('Нужно заполнить настройки', 'error', 'search');
+      return;
+    }
+
+    if (!normalizedEmail) {
+      setSearchSaveMessage('Не удалось определить email для сохранения.', '#991b1b');
+      setStatus('Сохранение email: ошибка', 'error', 'search');
+      return;
+    }
+
+    setSearchSaveEmailButtonState(normalizedEmail, true, 'сохраняю...');
+    setSearchSaveMessage(
+      'Добавляю <b>' + escapeHtml(normalizedEmail) + '</b> в МойСклад...',
+      '#92400e'
+    );
+    setStatus('Сохраняю email...', 'loading', 'search');
+
+    try {
+      result = await saveSupplierEmailsToMoySklad(orderId, settings, {
+        emails: [normalizedEmail]
+      });
+
+      if (!result.ok) {
+        setSearchSaveEmailButtonState(normalizedEmail, false, 'добавить email в МС');
+        renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Письма по заказу');
+        setStatus('Сохранение email: ошибка', 'error', 'search');
+        return;
+      }
+
+      if (!result.data || !result.data.success) {
+        setSearchSaveEmailButtonState(normalizedEmail, false, 'добавить email в МС');
+        setSearchSaveMessage(
+          escapeHtml((result.data && result.data.error) || 'Не удалось сохранить email в МойСклад'),
+          '#991b1b'
+        );
+        setStatus('Сохранение email: ошибка', 'error', 'search');
+        return;
+      }
+
+      syncSavedSupplierEmailsState(result.data);
+
+      if (result.data.counterpartyLink) {
+        linkHtml =
+          ' <a href="' +
+          escapeHtml(result.data.counterpartyLink) +
+          '" target="_blank" rel="noopener noreferrer" style="color:inherit;font-weight:bold;">Открыть карточку</a>.';
+      }
+
+      if (result.data.storageTarget === 'contactPerson' && result.data.contactPersonName) {
+        locationLabel = 'контактное лицо <b>' + escapeHtml(result.data.contactPersonName) + '</b>';
+      } else if (result.data.storageTarget === 'counterparty') {
+        locationLabel = 'поле email контрагента';
+      } else if (result.data.storageTargetLabel) {
+        locationLabel = escapeHtml(result.data.storageTargetLabel);
+      }
+
+      message = result.data.addedEmails && result.data.addedEmails.length
+        ? 'Email <b>' + escapeHtml(normalizedEmail) + '</b> сохранен в ' + locationLabel + '.' + linkHtml
+        : 'Email <b>' + escapeHtml(normalizedEmail) + '</b> уже был сохранен в МойСклад.' + linkHtml;
+
+      setSearchSaveEmailButtonState(
+        normalizedEmail,
+        true,
+        result.data.addedEmails && result.data.addedEmails.length ? 'добавлено в МС' : 'уже есть в МС'
+      );
+      setSearchSaveMessage(message, '#166534');
+      setStatus('Email сохранен', 'ok', 'search');
+    } catch (error) {
+      setSearchSaveEmailButtonState(normalizedEmail, false, 'добавить email в МС');
+      setSearchSaveMessage(
+        escapeHtml(error && error.message ? error.message : String(error)),
+        '#991b1b'
+      );
+      setStatus('Сохранение email: ошибка', 'error', 'search');
+    }
+  }
+
   function startBackgroundPrefetch(orderId) {
     var settings = ensureUserSettings({ silent: true });
 
@@ -1357,6 +1569,7 @@
         }
 
         renderEmails(prefetchResult.data, 'prefetch', settings);
+        attachSearchEmailSaveHandlers();
         return;
       } catch (error) {
         renderError(
@@ -1386,6 +1599,7 @@
       }
 
       renderEmails(result.data, 'manual', settings);
+      attachSearchEmailSaveHandlers();
       setStatus('Ручной поиск завершен', 'ok', 'search');
 
       if (state.currentOrderId === orderId) {
@@ -1722,8 +1936,8 @@
     recipients = normalizeRecipientList(fields.to && fields.to.value);
 
     if (!recipients.length) {
-      setPlacementMessage('#tm-ms-placement-suggestion-note', 'Нечего сохранять в карточку: список получателей пуст.', '#991b1b');
-      setStatus('Нет email для карточки', 'error', 'placement');
+      setPlacementMessage('#tm-ms-placement-suggestion-note', 'Нечего сохранять в МойСклад: список получателей пуст.', '#991b1b');
+      setStatus('Нет email для сохранения', 'error', 'placement');
       return;
     }
 
@@ -1732,8 +1946,8 @@
     }
 
     setPlacementCounterpartySaveButtonState(true, 'Сохраняю...');
-    setPlacementMessage('#tm-ms-placement-suggestion-note', 'Добавляю email в карточку контрагента...', '#92400e');
-    setStatus('Сохраняю email в карточку...', 'loading', 'placement');
+    setPlacementMessage('#tm-ms-placement-suggestion-note', 'Добавляю email в МойСклад...', '#92400e');
+    setStatus('Сохраняю email в МойСклад...', 'loading', 'placement');
 
     try {
       result = await savePlacementCounterpartyEmails(orderId, settings, {
@@ -1741,31 +1955,24 @@
       });
 
       if (!result.ok) {
-        setPlacementCounterpartySaveButtonState(false, 'Добавить в карточку контрагента');
+        setPlacementCounterpartySaveButtonState(false, getPlacementMoySkladSaveButtonLabel());
         renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Размещение PO');
         setStatus('Сохранение email: ошибка', 'error', 'placement');
         return;
       }
 
       if (!result.data || !result.data.success) {
-        setPlacementCounterpartySaveButtonState(false, 'Добавить в карточку контрагента');
+        setPlacementCounterpartySaveButtonState(false, getPlacementMoySkladSaveButtonLabel());
         setPlacementMessage(
           '#tm-ms-placement-suggestion-note',
-          escapeHtml((result.data && result.data.error) || 'Не удалось сохранить email в карточку'),
+          escapeHtml((result.data && result.data.error) || 'Не удалось сохранить email в МойСклад'),
           '#991b1b'
         );
         setStatus('Сохранение email: ошибка', 'error', 'placement');
         return;
       }
 
-      if (state.placementMetaResult && state.placementMetaResult.data) {
-        state.placementMetaResult.data.emails = Array.isArray(result.data.emails) ? result.data.emails.slice() : recipients.slice();
-        state.placementMetaResult.data.counterpartyEmail = result.data.counterpartyEmail || '';
-        state.placementMetaResult.data.prefillEmails = Array.isArray(result.data.emails) ? result.data.emails.slice() : recipients.slice();
-        state.placementMetaResult.data.useGmailSuggestions = false;
-        state.placementMetaResult.data.gmailSuggestionCandidates = [];
-        state.placementMetaResult.data.gmailSuggestedEmails = [];
-      }
+      syncSavedSupplierEmailsState(result.data);
 
       if (result.data.counterpartyLink) {
         linkHtml =
@@ -1776,18 +1983,22 @@
 
       setPlacementCounterpartySaveButtonState(
         true,
-        result.data.addedEmails && result.data.addedEmails.length ? 'Добавлено в карточку' : 'Уже есть в карточке'
+        result.data.addedEmails && result.data.addedEmails.length ? 'Добавлено в МойСклад' : 'Уже есть в МойСклад'
       );
       setPlacementMessage(
         '#tm-ms-placement-suggestion-note',
         result.data.addedEmails && result.data.addedEmails.length
-          ? 'Email сохранены в карточке контрагента.' + linkHtml
-          : 'Эти email уже были в карточке контрагента.' + linkHtml,
+          ? (
+              result.data.storageTarget === 'contactPerson' && result.data.contactPersonName
+                ? 'Email сохранены в контактное лицо <b>' + escapeHtml(result.data.contactPersonName) + '</b>.' + linkHtml
+                : 'Email сохранены в поле email контрагента.' + linkHtml
+            )
+          : 'Эти email уже были сохранены в МойСклад.' + linkHtml,
         '#166534'
       );
-      setStatus('Email сохранены в карточку', 'ok', 'placement');
+      setStatus('Email сохранены в МойСклад', 'ok', 'placement');
     } catch (error) {
-      setPlacementCounterpartySaveButtonState(false, 'Добавить в карточку контрагента');
+      setPlacementCounterpartySaveButtonState(false, getPlacementMoySkladSaveButtonLabel());
       setPlacementMessage(
         '#tm-ms-placement-suggestion-note',
         escapeHtml(error && error.message ? error.message : String(error)),
