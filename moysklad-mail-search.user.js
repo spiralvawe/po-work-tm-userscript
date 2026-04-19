@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.2
+// @version      0.1.3
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -396,17 +396,23 @@
 
     button.type = 'button';
     button.style.position = 'fixed';
-    button.style.top = '70px';
+    button.style.top = styleOptions.top || '70px';
     button.style.right = styleOptions.right || '20px';
     button.style.zIndex = '999999';
-    button.style.padding = '10px 14px';
+    button.style.width = styleOptions.width || '168px';
+    button.style.height = styleOptions.height || '40px';
+    button.style.padding = '0 16px';
     button.style.background = styleOptions.background || '#1976d2';
     button.style.color = '#fff';
-    button.style.border = 'none';
-    button.style.borderRadius = '8px';
+    button.style.border = '2px solid transparent';
+    button.style.borderRadius = '10px';
     button.style.cursor = 'pointer';
     button.style.fontSize = '14px';
     button.style.fontFamily = 'Arial, sans-serif';
+    button.style.fontWeight = '600';
+    button.style.display = 'flex';
+    button.style.alignItems = 'center';
+    button.style.justifyContent = 'center';
     button.style.boxShadow = '0 4px 12px rgba(0,0,0,0.25)';
     button.style.boxSizing = 'border-box';
   }
@@ -422,6 +428,7 @@
     button.textContent = 'Поискать письма';
     applyFloatingButtonStyles(button, {
       right: '150px',
+      top: '70px',
       background: '#1976d2'
     });
     button.addEventListener('click', onSearchButtonClick);
@@ -438,11 +445,12 @@
 
     button = document.createElement('button');
     button.id = APP_CONFIG.PLACEMENT_BUTTON_ID;
-    button.textContent = 'Разместить';
+    button.textContent = 'Размесить заказ';
     button.style.display = 'none';
     applyFloatingButtonStyles(button, {
-      right: '20px',
-      background: '#15803d'
+      right: '150px',
+      top: '118px',
+      background: '#1976d2'
     });
     button.addEventListener('click', onPlacementButtonClick);
     document.body.appendChild(button);
@@ -477,21 +485,26 @@
 
   function resetActionButtonBorders() {
     [createSearchButton(), createPlacementButton()].forEach(function (button) {
-      button.style.border = 'none';
+      button.style.borderColor = 'transparent';
     });
   }
 
-  function setStatus(text, mode, buttonKey) {
+  function setStatus(text, mode, buttonKey, options) {
     var badge = createStatusBadge();
     var targetButton = buttonKey === 'placement' ? createPlacementButton() : createSearchButton();
+    var statusOptions = options || {};
     var statusMode = mode || 'neutral';
+    var showBadge = statusOptions.showBadge !== false;
 
     resetActionButtonBorders();
-    badge.style.display = text ? 'block' : 'none';
-    badge.textContent = text || '';
+    badge.style.display = showBadge && text ? 'block' : 'none';
+    badge.textContent = showBadge ? text || '' : '';
 
     if (statusMode === 'loading') {
-      targetButton.style.border = '1px solid #eab308';
+      targetButton.style.borderColor = '#eab308';
+      if (!showBadge) {
+        return;
+      }
       badge.style.background = '#fef3c7';
       badge.style.color = '#92400e';
       badge.style.borderColor = '#fcd34d';
@@ -499,7 +512,10 @@
     }
 
     if (statusMode === 'ok') {
-      targetButton.style.border = '1px solid #16a34a';
+      targetButton.style.borderColor = '#16a34a';
+      if (!showBadge) {
+        return;
+      }
       badge.style.background = '#dcfce7';
       badge.style.color = '#166534';
       badge.style.borderColor = '#86efac';
@@ -507,7 +523,10 @@
     }
 
     if (statusMode === 'error') {
-      targetButton.style.border = '1px solid #dc2626';
+      targetButton.style.borderColor = '#dc2626';
+      if (!showBadge) {
+        return;
+      }
       badge.style.background = '#fee2e2';
       badge.style.color = '#991b1b';
       badge.style.borderColor = '#fca5a5';
@@ -528,7 +547,7 @@
     panel = document.createElement('div');
     panel.id = APP_CONFIG.PANEL_ID;
     panel.style.position = 'fixed';
-    panel.style.top = '115px';
+    panel.style.top = '168px';
     panel.style.right = '20px';
     panel.style.width = '540px';
     panel.style.maxWidth = 'calc(100vw - 40px)';
@@ -971,7 +990,9 @@
     }
 
     state.searchPrefetchStartedAt = Date.now();
-    setStatus('Фоновый поиск писем...', 'loading', 'search');
+    setStatus('Фоновый поиск писем...', 'loading', 'search', {
+      showBadge: false
+    });
 
     state.searchPrefetchPromise = fetchSearchData(orderId, settings, {
       skipLog: true,
@@ -986,7 +1007,9 @@
         state.searchPrefetchError = null;
 
         if (result.ok && result.data && result.data.success) {
-          setStatus('Фоновый поиск готов', 'ok', 'search');
+          setStatus('Фоновый поиск готов', 'ok', 'search', {
+            showBadge: false
+          });
         } else if (result.ok && result.data && !result.data.success) {
           setStatus('Фоновый поиск: ошибка', 'error', 'search');
         } else {
@@ -1349,7 +1372,7 @@
         '#tm-ms-placement-state-note',
         result.data.alreadyPlaced
           ? 'Заказ уже был в статусе "Размещен".'
-          : 'Статус обновлен. Кнопка "Разместить" для этого заказа скрыта до следующего изменения состояния.',
+          : 'Статус обновлен. Кнопка "Размесить заказ" для этого заказа скрыта до следующего изменения состояния.',
         '#166534'
       );
       setStatus('Статус обновлен', 'ok', 'placement');
