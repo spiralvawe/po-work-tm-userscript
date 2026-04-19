@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.7
+// @version      0.1.8
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -815,6 +815,8 @@
     var recipients = Array.isArray(data && data.prefillEmails)
       ? data.prefillEmails.join(', ')
       : (Array.isArray(data && data.emails) ? data.emails.join(', ') : '');
+    var normalizedRecipients = normalizeRecipientList(recipients);
+    var selectedSuggestedEmail = normalizedRecipients.length ? normalizedRecipients[0] : '';
     var subject = buildPlacementEmailSubject(data);
     var body = buildPlacementEmailBody(data);
     var attachmentFileName = String((data && data.attachmentFileName) || 'PO.xls');
@@ -823,6 +825,9 @@
     var draftButtonDisabled = state.placementEmailSent;
     var draftButtonLabel = state.placementDraftId ? 'Обновить черновик' : 'Сохранить черновик';
     var useGmailSuggestions = Boolean(data && data.useGmailSuggestions);
+    var gmailSuggestedEmails = data && Array.isArray(data.gmailSuggestedEmails)
+      ? data.gmailSuggestedEmails
+      : [];
     var gmailSuggestionCandidates = data && Array.isArray(data.gmailSuggestionCandidates)
       ? data.gmailSuggestionCandidates
       : [];
@@ -862,11 +867,12 @@
     if (useGmailSuggestions) {
       html += '<div style="border:1px solid #fdba74;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff7ed;">';
       html += '<div style="font-weight:bold;color:#9a3412;margin-bottom:6px;">В карточке контрагента нет email</div>';
-      html += '<div style="font-size:13px;color:#7c2d12;margin-bottom:10px;">Предлагаю использовать адреса, найденные в почте. Они уже подставлены в получателей, но их все равно можно отредактировать перед отправкой.</div>';
+      html += '<div style="font-size:13px;color:#7c2d12;margin-bottom:10px;">Ниже адреса, найденные по истории переписки. Клик по адресу делает его основным email и подставляет первым в поле <b>Кому</b>.</div>';
       html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:' + (gmailSuggestionCandidates.length ? '10px' : '12px') + ';">';
 
-      (Array.isArray(data.prefillEmails) ? data.prefillEmails : []).forEach(function (email) {
-        html += '<span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:#ffedd5;color:#9a3412;font-size:12px;font-weight:bold;">' + escapeHtml(email) + '</span>';
+      gmailSuggestedEmails.forEach(function (email) {
+        var isSelected = selectedSuggestedEmail && selectedSuggestedEmail === String(email || '').trim().toLowerCase();
+        html += '<button class="tm-ms-placement-suggested-email-btn" data-email="' + escapeHtml(email) + '" type="button" style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;border:1px solid ' + (isSelected ? '#9a3412' : '#fdba74') + ';background:' + (isSelected ? '#c2410c' : '#ffedd5') + ';color:' + (isSelected ? '#fff' : '#9a3412') + ';font-size:12px;font-weight:bold;cursor:pointer;">' + escapeHtml(isSelected ? 'Основной: ' + email : email) + '</button>';
       });
 
       html += '</div>';
@@ -929,6 +935,10 @@
     getPanelBody().querySelector('#tm-ms-placement-state-btn').addEventListener('click', onPlacementSetStateClick);
 
     if (useGmailSuggestions) {
+      getPanelBody().querySelectorAll('.tm-ms-placement-suggested-email-btn').forEach(function (button) {
+        button.addEventListener('click', onPlacementSuggestedEmailClick);
+      });
+      getPanelBody().querySelector('#tm-ms-placement-to').addEventListener('input', syncPlacementSuggestedEmailSelectionFromTextarea);
       getPanelBody().querySelector('#tm-ms-placement-save-counterparty-btn').addEventListener('click', onPlacementSaveCounterpartyEmailsClick);
     }
   }
@@ -1136,10 +1146,12 @@
     var baseEmails = Array.isArray(panelData.emails) ? panelData.emails.slice() : [];
     var searchResult;
     var suggestions;
+    var suggestedEmails;
 
     panelData.prefillEmails = baseEmails.slice();
     panelData.useGmailSuggestions = false;
     panelData.gmailSuggestionCandidates = [];
+    panelData.gmailSuggestedEmails = [];
 
     if (baseEmails.length) {
       return panelData;
@@ -1156,16 +1168,91 @@
     }
 
     suggestions = searchResult.data.supplierEmailSuggestions || {};
+    suggestedEmails = Array.isArray(suggestions.suggestedEmails)
+      ? suggestions.suggestedEmails.slice()
+      : [];
+
     panelData.gmailSuggestionCandidates = Array.isArray(suggestions.candidates)
       ? suggestions.candidates
       : [];
+    panelData.gmailSuggestedEmails = suggestedEmails.slice();
 
-    if (Array.isArray(suggestions.suggestedEmails) && suggestions.suggestedEmails.length) {
-      panelData.prefillEmails = suggestions.suggestedEmails.slice();
+    if (suggestedEmails.length) {
+      panelData.prefillEmails = [suggestedEmails[0]];
       panelData.useGmailSuggestions = true;
     }
 
     return panelData;
+  }
+
+  function getPlacementSuggestedEmailButtons() {
+    return Array.prototype.slice.call(
+      getPanelBody().querySelectorAll('.tm-ms-placement-suggested-email-btn')
+    );
+  }
+
+  function getPlacementSuggestedEmails() {
+    return getPlacementSuggestedEmailButtons()
+      .map(function (button) {
+        return String(button && button.getAttribute('data-email') || '').trim().toLowerCase();
+      })
+      .filter(Boolean);
+  }
+
+  function setPlacementSuggestedEmailButtonStates(selectedEmail) {
+    var normalizedSelectedEmail = String(selectedEmail || '').trim().toLowerCase();
+
+    getPlacementSuggestedEmailButtons().forEach(function (button) {
+      var email = String(button.getAttribute('data-email') || '').trim().toLowerCase();
+      var isSelected = Boolean(email && normalizedSelectedEmail && email === normalizedSelectedEmail);
+
+      button.style.background = isSelected ? '#c2410c' : '#ffedd5';
+      button.style.color = isSelected ? '#fff' : '#9a3412';
+      button.style.borderColor = isSelected ? '#9a3412' : '#fdba74';
+      button.textContent = isSelected ? 'Основной: ' + email : email;
+    });
+  }
+
+  function syncPlacementSuggestedEmailSelectionFromTextarea() {
+    var fields = getPlacementDraftFields();
+    var recipients = normalizeRecipientList(fields.to && fields.to.value);
+    setPlacementSuggestedEmailButtonStates(recipients.length ? recipients[0] : '');
+  }
+
+  function applyPlacementSuggestedEmail(email) {
+    var normalizedEmail = String(email || '').trim().toLowerCase();
+    var fields = getPlacementDraftFields();
+    var recipients;
+    var suggestedEmails;
+    var remainingRecipients;
+    var nextRecipients;
+
+    if (!normalizedEmail || !fields.to) {
+      return;
+    }
+
+    recipients = normalizeRecipientList(fields.to.value);
+    suggestedEmails = getPlacementSuggestedEmails();
+    remainingRecipients = recipients.filter(function (recipient) {
+      return recipient !== normalizedEmail && suggestedEmails.indexOf(recipient) === -1;
+    });
+    nextRecipients = [normalizedEmail].concat(remainingRecipients);
+
+    fields.to.value = nextRecipients.join(', ');
+    setPlacementSuggestedEmailButtonStates(normalizedEmail);
+    setPlacementMessage(
+      '#tm-ms-placement-suggestion-note',
+      'Выбран основной email для размещения: <b>' + escapeHtml(normalizedEmail) + '</b>.',
+      '#7c2d12'
+    );
+    fields.to.focus();
+  }
+
+  function onPlacementSuggestedEmailClick(event) {
+    var button = event && event.currentTarget;
+    var email = button ? button.getAttribute('data-email') : '';
+
+    applyPlacementSuggestedEmail(email);
   }
 
   function startBackgroundPrefetch(orderId) {
@@ -1661,6 +1748,7 @@
         state.placementMetaResult.data.prefillEmails = Array.isArray(result.data.emails) ? result.data.emails.slice() : recipients.slice();
         state.placementMetaResult.data.useGmailSuggestions = false;
         state.placementMetaResult.data.gmailSuggestionCandidates = [];
+        state.placementMetaResult.data.gmailSuggestedEmails = [];
       }
 
       if (result.data.counterpartyLink) {
