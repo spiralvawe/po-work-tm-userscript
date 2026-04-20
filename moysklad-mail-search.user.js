@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.16
+// @version      0.1.17
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -30,7 +30,6 @@
     PANEL_TITLE_CLASS: 'tm-ms-panel-title',
     STATUS_ID: 'tm-ms-mail-search-status',
     DEFAULT_GMAIL_ACCOUNT_INDEX: 1,
-    TRACKING_LABEL_TEXT: 'Трекинг номер',
     TRACKING_BUTTON_TOP: '166px',
     PANEL_TOP: '216px',
     STORAGE_KEYS: {
@@ -55,6 +54,10 @@
     placementDraftId: '',
     placementEmailSent: false,
     trackingFieldValue: '',
+    trackingSourceType: '',
+    trackingSourceLabel: '',
+    trackingSourceId: '',
+    trackingSourceHref: '',
     trackingEntries: [],
     trackingLastResult: null,
     isPanelOpen: false,
@@ -492,84 +495,22 @@
     return entries;
   }
 
-  function getTrackingCandidateTextFromNode(node, labelText) {
-    var text = normalizeWhitespace(node && node.textContent);
+  function syncTrackingStateFromPlacementData(data) {
+    var fieldValue = normalizeWhitespace(data && data.trackingRawValue);
 
-    if (!text || text === labelText) {
-      return '';
-    }
+    state.trackingFieldValue = fieldValue;
+    state.trackingSourceType = String(data && data.trackingSourceType || '').trim();
+    state.trackingSourceLabel = String(data && data.trackingSourceLabel || '').trim();
+    state.trackingSourceId = String(data && data.trackingSourceId || '').trim();
+    state.trackingSourceHref = String(data && data.trackingSourceHref || '').trim();
+    state.trackingEntries = extractTrackingEntriesFromText(fieldValue);
 
-    return extractTrackingEntriesFromText(text).length ? text : '';
+    return state.trackingEntries.slice();
   }
 
-  function findTrackingFieldValueNearLabel(labelNode, labelText) {
-    var parent = labelNode ? labelNode.parentElement : null;
-    var current = parent;
-    var depth = 0;
-    var candidateText = '';
-
-    if (!labelNode) {
-      return '';
-    }
-
-    candidateText = getTrackingCandidateTextFromNode(labelNode.nextElementSibling, labelText);
-    if (candidateText) {
-      return candidateText;
-    }
-
-    if (parent) {
-      Array.prototype.slice.call(parent.children || []).forEach(function (child) {
-        if (!candidateText && child !== labelNode) {
-          candidateText = getTrackingCandidateTextFromNode(child, labelText);
-        }
-      });
-      if (candidateText) {
-        return candidateText;
-      }
-    }
-
-    while (current && depth < 4) {
-      candidateText = getTrackingCandidateTextFromNode(current.nextElementSibling, labelText);
-      if (candidateText) {
-        return candidateText;
-      }
-
-      current = current.parentElement;
-      depth += 1;
-    }
-
-    return '';
-  }
-
-  function getTrackingFieldValueFromPage() {
-    var labelText = APP_CONFIG.TRACKING_LABEL_TEXT;
-    var lowerLabelText = labelText.toLowerCase();
-    var nodes = Array.prototype.slice.call(document.querySelectorAll('div, span, label, dt, th, td'));
-    var value = '';
-
-    nodes.some(function (node) {
-      var text = normalizeWhitespace(node.textContent).toLowerCase();
-
-      if (text !== lowerLabelText) {
-        return false;
-      }
-
-      value = findTrackingFieldValueNearLabel(node, labelText);
-      return Boolean(value);
-    });
-
-    return value;
-  }
-
-  function getCurrentTrackingEntriesFromPage() {
-    var fieldValue = getTrackingFieldValueFromPage();
-    var entries = extractTrackingEntriesFromText(fieldValue);
-
-    // MoySklad can temporarily rerender the details pane and hide the field for a moment.
-    // Once we've detected tracking for the current order, keep the button visible until order change.
-    if (entries.length) {
-      state.trackingFieldValue = fieldValue;
-      state.trackingEntries = entries.slice();
+  function getCurrentTrackingEntries() {
+    if (state.placementMetaResult && state.placementMetaResult.ok && state.placementMetaResult.data) {
+      return syncTrackingStateFromPlacementData(state.placementMetaResult.data);
     }
 
     return state.trackingEntries.slice();
@@ -1739,15 +1680,17 @@
 
   function renderTrackingPanel(data) {
     var entries = data && Array.isArray(data.entries) ? data.entries : [];
+    var sourceLabel = normalizeWhitespace(data && data.sourceLabel) || 'Трекинг номер';
     var html = '';
 
     html += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:14px;background:#f9fafb;">';
-    html += '<div style="margin-bottom:6px;"><b>Поле в заказе:</b> ' + escapeHtml(data && data.rawFieldValue ? data.rawFieldValue : '') + '</div>';
+    html += '<div style="margin-bottom:6px;"><b>Поле заказа:</b> ' + escapeHtml(sourceLabel) + '</div>';
+    html += '<div style="margin-bottom:6px;"><b>Значение:</b> ' + escapeHtml(data && data.rawFieldValue ? data.rawFieldValue : '') + '</div>';
     html += '<div style="margin-bottom:0;"><b>Распознано треков:</b> ' + escapeHtml(String(entries.length)) + '</div>';
     html += '</div>';
 
     if (!entries.length) {
-      html += '<div style="padding:12px;border:1px solid #fecaca;border-radius:10px;background:#fef2f2;color:#991b1b;">Не удалось распознать трек-номер рядом с полем <b>Трекинг номер</b>.</div>';
+      html += '<div style="padding:12px;border:1px solid #fecaca;border-radius:10px;background:#fef2f2;color:#991b1b;">Не удалось распознать трек-номер из поля заказа <b>' + escapeHtml(sourceLabel) + '</b>.</div>';
       setPanelHtml(html, 'Трекинг поставки', 'tracking');
       return;
     }
@@ -1831,6 +1774,10 @@
     state.placementDraftId = '';
     state.placementEmailSent = false;
     state.trackingFieldValue = '';
+    state.trackingSourceType = '';
+    state.trackingSourceLabel = '';
+    state.trackingSourceId = '';
+    state.trackingSourceHref = '';
     state.trackingEntries = [];
     state.trackingLastResult = null;
   }
@@ -2025,16 +1972,13 @@
   }
 
   function syncTrackingButtonVisibility() {
-    var entries;
-
     if (!isPurchaseOrderPage()) {
       setTrackingButtonVisible(false);
       return [];
     }
 
-    entries = getCurrentTrackingEntriesFromPage();
-    setTrackingButtonVisible(Boolean(entries.length));
-    return entries;
+    setTrackingButtonVisible(Boolean(getCurrentTrackingEntries().length));
+    return state.trackingEntries.slice();
   }
 
   function syncSavedSupplierEmailsState(resultData) {
@@ -2066,6 +2010,7 @@
         state.placementMetaResult = result;
         state.placementMetaError = null;
         syncPlacementButtonWithResult(orderId, result);
+        syncTrackingButtonVisibility();
         return result;
       })
       .catch(function (error) {
@@ -2073,6 +2018,7 @@
           state.placementMetaError = error;
           state.placementMetaResult = null;
           setPlacementButtonVisible(false);
+          setTrackingButtonVisible(false);
         }
 
         throw error;
@@ -2674,6 +2620,7 @@
     if (!entries.length) {
       renderTrackingPanel({
         rawFieldValue: state.trackingFieldValue,
+        sourceLabel: state.trackingSourceLabel,
         entries: []
       });
       setStatus('Трекинг не найден', 'error', 'tracking');
@@ -2694,6 +2641,7 @@
     state.trackingLastResult = results.slice();
     renderTrackingPanel({
       rawFieldValue: state.trackingFieldValue,
+      sourceLabel: state.trackingSourceLabel,
       entries: results,
       showSupportNote: showSupportNote
     });
