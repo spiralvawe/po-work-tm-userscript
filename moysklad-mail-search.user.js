@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.13
+// @version      0.1.14
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -896,6 +896,7 @@
     var suggestionEmails = suggestions && Array.isArray(suggestions.suggestedEmails)
       ? suggestions.suggestedEmails
       : [];
+    var hasSupplierEmail = Boolean(String(data && data.supplierEmail || '').trim());
     var addableEmails = collectSearchSaveCandidateEmails(data);
     var primaryEmails = data && Array.isArray(data.emailsPrimary)
       ? data.emailsPrimary
@@ -945,7 +946,7 @@
     html += '</div>';
     html += '<div id="tm-ms-search-save-note" style="margin:-4px 0 12px 0;font-size:12px;color:#555;"></div>';
 
-    if (suggestionEmails.length) {
+    if (!hasSupplierEmail && suggestionEmails.length) {
       html += '<div style="border:1px solid #fdba74;border-radius:10px;padding:12px;margin-bottom:14px;background:#fff7ed;">';
       html += '<div style="font-weight:bold;font-size:14px;color:#9a3412;margin-bottom:8px;">Вероятные email поставщика из переписки</div>';
       html += '<div style="font-size:12px;color:#7c2d12;margin-bottom:10px;">Если в карточке контрагента пусто, эти адреса можно использовать как черновые получатели для размещения.</div>';
