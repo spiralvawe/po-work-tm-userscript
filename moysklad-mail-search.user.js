@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.12
+// @version      0.1.13
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -457,6 +457,36 @@
     return saveSupplierEmailsToMoySklad(orderId, settings, payload);
   }
 
+  async function saveSearchEmailToList(orderId, settings, payload) {
+    var response = await fetch(APP_CONFIG.GAS_URL, {
+      method: 'POST',
+      redirect: 'follow',
+      credentials: 'omit',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: JSON.stringify({
+        action: 'searchSaveEmailList',
+        token: settings.userToken,
+        id: orderId,
+        listType: payload.listType,
+        emails: payload.emails
+      })
+    });
+    var text = await response.text();
+    var trimmed = text.trim();
+    var isJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+
+    return {
+      ok: isJson,
+      status: response.status,
+      requestUrl: APP_CONFIG.GAS_URL,
+      text: text,
+      data: isJson ? JSON.parse(trimmed) : null
+    };
+  }
+
   var SEARCH_STATUS_BORDER_COLORS = {
     loading: '#eab308',
     ok: '#16a34a',
@@ -825,7 +855,9 @@
     actionableEmails.forEach(function (email) {
       html += '<span style="display:inline-flex;align-items:center;gap:6px;">';
       html += '<span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;font-size:12px;font-weight:bold;">' + escapeHtml(email) + '</span>';
-      html += '<button class="tm-ms-search-save-email-btn" data-email="' + escapeHtml(email) + '" type="button" style="border:none;background:none;padding:0;color:#1976d2;cursor:pointer;font-size:12px;font-weight:bold;text-decoration:underline;">добавить email в МС</button>';
+      html += '<button class="tm-ms-search-email-action-btn" data-email="' + escapeHtml(email) + '" data-action="ms" type="button" style="border:none;background:none;padding:0;color:#1976d2;cursor:pointer;font-size:12px;font-weight:bold;text-decoration:underline;">Add email to MS</button>';
+      html += '<button class="tm-ms-search-email-action-btn" data-email="' + escapeHtml(email) + '" data-action="transport" type="button" style="border:none;background:none;padding:0;color:#1976d2;cursor:pointer;font-size:12px;font-weight:bold;text-decoration:underline;">to transport list</button>';
+      html += '<button class="tm-ms-search-email-action-btn" data-email="' + escapeHtml(email) + '" data-action="ignore" type="button" style="border:none;background:none;padding:0;color:#1976d2;cursor:pointer;font-size:12px;font-weight:bold;text-decoration:underline;">to ignore list</button>';
       html += '</span>';
     });
 
@@ -1248,18 +1280,21 @@
     }
   }
 
-  function getSearchSaveEmailButtons(targetEmail) {
+  function getSearchEmailActionButtons(targetEmail, actionName) {
     var normalizedTargetEmail = String(targetEmail || '').trim().toLowerCase();
+    var normalizedActionName = String(actionName || '').trim().toLowerCase();
 
     return Array.prototype.slice.call(
-      getPanelBody().querySelectorAll('.tm-ms-search-save-email-btn')
+      getPanelBody().querySelectorAll('.tm-ms-search-email-action-btn')
     ).filter(function (button) {
-      return String(button.getAttribute('data-email') || '').trim().toLowerCase() === normalizedTargetEmail;
+      var buttonAction = String(button.getAttribute('data-action') || '').trim().toLowerCase();
+      return String(button.getAttribute('data-email') || '').trim().toLowerCase() === normalizedTargetEmail &&
+        buttonAction === normalizedActionName;
     });
   }
 
-  function setSearchSaveEmailButtonState(targetEmail, disabled, label) {
-    getSearchSaveEmailButtons(targetEmail).forEach(function (button) {
+  function setSearchEmailActionButtonState(targetEmail, actionName, disabled, label) {
+    getSearchEmailActionButtons(targetEmail, actionName).forEach(function (button) {
       button.disabled = Boolean(disabled);
       button.style.opacity = disabled ? '0.7' : '1';
       button.style.cursor = disabled ? 'default' : 'pointer';
@@ -1268,6 +1303,34 @@
         button.textContent = label;
       }
     });
+  }
+
+  function getSearchEmailActionDefaultLabel(actionName) {
+    var normalizedActionName = String(actionName || '').trim().toLowerCase();
+
+    if (normalizedActionName === 'transport') {
+      return 'to transport list';
+    }
+
+    if (normalizedActionName === 'ignore') {
+      return 'to ignore list';
+    }
+
+    return 'Add email to MS';
+  }
+
+  function getSearchEmailActionLoadingLabel(actionName) {
+    var normalizedActionName = String(actionName || '').trim().toLowerCase();
+
+    if (normalizedActionName === 'transport') {
+      return 'adding...';
+    }
+
+    if (normalizedActionName === 'ignore') {
+      return 'adding...';
+    }
+
+    return 'saving...';
   }
 
   function getPlacementDraftButtonLabel() {
@@ -1513,8 +1576,8 @@
   }
 
   function attachSearchEmailSaveHandlers() {
-    getPanelBody().querySelectorAll('.tm-ms-search-save-email-btn').forEach(function (button) {
-      button.addEventListener('click', onSearchSaveEmailClick);
+    getPanelBody().querySelectorAll('.tm-ms-search-email-action-btn').forEach(function (button) {
+      button.addEventListener('click', onSearchEmailActionClick);
     });
   }
 
@@ -1526,30 +1589,45 @@
     });
   }
 
-  async function onSearchSaveEmailClick(event) {
-    var button = event && event.currentTarget;
-    var email = button ? button.getAttribute('data-email') : '';
-    var normalizedEmail = String(email || '').trim().toLowerCase();
-    var orderId = getOrderIdFromUrl();
-    var settings = ensureUserSettings();
+  async function refreshSearchResultsAfterEmailAction(orderId, settings, preferredFilter) {
+    var result = await fetchSearchData(orderId, settings, {
+      skipLog: true,
+      prefetch: false
+    });
+
+    if (!result.ok) {
+      renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Письма по заказу');
+      throw new Error('Не удалось обновить выдачу поиска после изменения списка.');
+    }
+
+    if (!result.data || !result.data.success) {
+      throw new Error((result.data && result.data.error) || 'Не удалось обновить выдачу поиска.');
+    }
+
+    renderEmails(result.data, 'manual', settings);
+    attachSearchEmailSaveHandlers();
+    attachSearchFilterHandlers();
+
+    if (preferredFilter) {
+      setSearchEmailFilter(preferredFilter);
+    }
+
+    if (state.currentOrderId === orderId) {
+      state.searchPrefetchResult = result;
+      state.searchPrefetchPromise = null;
+      state.searchPrefetchConsumed = true;
+    }
+
+    return result;
+  }
+
+  async function onSearchSaveEmailClick(normalizedEmail, orderId, settings) {
     var result;
     var linkHtml = '';
     var locationLabel = 'МойСклад';
     var message = '';
 
-    if (!orderId || !settings) {
-      renderSettingsRequired('сохранения email в МойСклад');
-      setStatus('Нужно заполнить настройки', 'error', 'search');
-      return;
-    }
-
-    if (!normalizedEmail) {
-      setSearchSaveMessage('Не удалось определить email для сохранения.', '#991b1b');
-      setStatus('Сохранение email: ошибка', 'error', 'search');
-      return;
-    }
-
-    setSearchSaveEmailButtonState(normalizedEmail, true, 'сохраняю...');
+    setSearchEmailActionButtonState(normalizedEmail, 'ms', true, getSearchEmailActionLoadingLabel('ms'));
     setSearchSaveMessage(
       'Добавляю <b>' + escapeHtml(normalizedEmail) + '</b> в МойСклад...',
       '#92400e'
@@ -1562,14 +1640,14 @@
       });
 
       if (!result.ok) {
-        setSearchSaveEmailButtonState(normalizedEmail, false, 'добавить email в МС');
+        setSearchEmailActionButtonState(normalizedEmail, 'ms', false, getSearchEmailActionDefaultLabel('ms'));
         renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Письма по заказу');
         setStatus('Сохранение email: ошибка', 'error', 'search');
         return;
       }
 
       if (!result.data || !result.data.success) {
-        setSearchSaveEmailButtonState(normalizedEmail, false, 'добавить email в МС');
+        setSearchEmailActionButtonState(normalizedEmail, 'ms', false, getSearchEmailActionDefaultLabel('ms'));
         setSearchSaveMessage(
           escapeHtml((result.data && result.data.error) || 'Не удалось сохранить email в МойСклад'),
           '#991b1b'
@@ -1599,21 +1677,116 @@
         ? 'Email <b>' + escapeHtml(normalizedEmail) + '</b> сохранен в ' + locationLabel + '.' + linkHtml
         : 'Email <b>' + escapeHtml(normalizedEmail) + '</b> уже был сохранен в МойСклад.' + linkHtml;
 
-      setSearchSaveEmailButtonState(
+      setSearchEmailActionButtonState(
         normalizedEmail,
+        'ms',
         true,
-        result.data.addedEmails && result.data.addedEmails.length ? 'добавлено в МС' : 'уже есть в МС'
+        result.data.addedEmails && result.data.addedEmails.length ? 'added to MS' : 'already in MS'
       );
       setSearchSaveMessage(message, '#166534');
       setStatus('Email сохранен', 'ok', 'search');
     } catch (error) {
-      setSearchSaveEmailButtonState(normalizedEmail, false, 'добавить email в МС');
+      setSearchEmailActionButtonState(normalizedEmail, 'ms', false, getSearchEmailActionDefaultLabel('ms'));
       setSearchSaveMessage(
         escapeHtml(error && error.message ? error.message : String(error)),
         '#991b1b'
       );
       setStatus('Сохранение email: ошибка', 'error', 'search');
     }
+  }
+
+  async function onSearchSaveEmailListClick(normalizedEmail, listType, orderId, settings) {
+    var result;
+    var listLabel = listType === 'transport' ? 'transport list' : 'ignore list';
+    var successLabel = listType === 'transport' ? 'in transport list' : 'in ignore list';
+
+    setSearchEmailActionButtonState(normalizedEmail, listType, true, getSearchEmailActionLoadingLabel(listType));
+    setSearchSaveMessage(
+      'Добавляю <b>' + escapeHtml(normalizedEmail) + '</b> в ' + escapeHtml(listLabel) + '...',
+      '#92400e'
+    );
+    setStatus('Обновляю список поиска...', 'loading', 'search');
+
+    try {
+      result = await saveSearchEmailToList(orderId, settings, {
+        listType: listType,
+        emails: [normalizedEmail]
+      });
+
+      if (!result.ok) {
+        setSearchEmailActionButtonState(normalizedEmail, listType, false, getSearchEmailActionDefaultLabel(listType));
+        renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Письма по заказу');
+        setStatus('Обновление списка: ошибка', 'error', 'search');
+        return;
+      }
+
+      if (!result.data || !result.data.success) {
+        setSearchEmailActionButtonState(normalizedEmail, listType, false, getSearchEmailActionDefaultLabel(listType));
+        setSearchSaveMessage(
+          escapeHtml((result.data && result.data.error) || 'Не удалось обновить список поиска'),
+          '#991b1b'
+        );
+        setStatus('Обновление списка: ошибка', 'error', 'search');
+        return;
+      }
+
+      setSearchEmailActionButtonState(
+        normalizedEmail,
+        listType,
+        true,
+        result.data.addedEmails && result.data.addedEmails.length ? successLabel : 'already there'
+      );
+
+      await refreshSearchResultsAfterEmailAction(
+        orderId,
+        settings,
+        listType === 'transport' ? 'transport' : ''
+      );
+
+      setSearchSaveMessage(
+        result.data.addedEmails && result.data.addedEmails.length
+          ? 'Email <b>' + escapeHtml(normalizedEmail) + '</b> added to ' + escapeHtml(listLabel) + '.'
+          : 'Email <b>' + escapeHtml(normalizedEmail) + '</b> уже был в ' + escapeHtml(listLabel) + '.',
+        '#166534'
+      );
+      setStatus('Список обновлен', 'ok', 'search');
+    } catch (error) {
+      setSearchEmailActionButtonState(normalizedEmail, listType, false, getSearchEmailActionDefaultLabel(listType));
+      setSearchSaveMessage(
+        escapeHtml(error && error.message ? error.message : String(error)),
+        '#991b1b'
+      );
+      setStatus('Обновление списка: ошибка', 'error', 'search');
+    }
+  }
+
+  async function onSearchEmailActionClick(event) {
+    var button = event && event.currentTarget;
+    var email = button ? button.getAttribute('data-email') : '';
+    var actionName = button ? button.getAttribute('data-action') : '';
+    var normalizedEmail = String(email || '').trim().toLowerCase();
+    var normalizedActionName = String(actionName || '').trim().toLowerCase();
+    var orderId = getOrderIdFromUrl();
+    var settings = ensureUserSettings();
+
+    if (!orderId || !settings) {
+      renderSettingsRequired('работы с email в поиске');
+      setStatus('Нужно заполнить настройки', 'error', 'search');
+      return;
+    }
+
+    if (!normalizedEmail) {
+      setSearchSaveMessage('Не удалось определить email для действия.', '#991b1b');
+      setStatus('Действие с email: ошибка', 'error', 'search');
+      return;
+    }
+
+    if (normalizedActionName === 'transport' || normalizedActionName === 'ignore') {
+      await onSearchSaveEmailListClick(normalizedEmail, normalizedActionName, orderId, settings);
+      return;
+    }
+
+    await onSearchSaveEmailClick(normalizedEmail, orderId, settings);
   }
 
   function startBackgroundPrefetch(orderId) {
