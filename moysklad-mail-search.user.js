@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.15
+// @version      0.1.16
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -563,9 +563,14 @@
 
   function getCurrentTrackingEntriesFromPage() {
     var fieldValue = getTrackingFieldValueFromPage();
+    var entries = extractTrackingEntriesFromText(fieldValue);
 
-    state.trackingFieldValue = fieldValue;
-    state.trackingEntries = extractTrackingEntriesFromText(fieldValue);
+    // MoySklad can temporarily rerender the details pane and hide the field for a moment.
+    // Once we've detected tracking for the current order, keep the button visible until order change.
+    if (entries.length) {
+      state.trackingFieldValue = fieldValue;
+      state.trackingEntries = entries.slice();
+    }
 
     return state.trackingEntries.slice();
   }
