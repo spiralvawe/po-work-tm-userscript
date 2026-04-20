@@ -5,6 +5,7 @@
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
+// @match        https://www.dbschenker.com/app/tracking-public/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -12,6 +13,7 @@
 // @connect      www.dbschenker.com
 // @connect      www.ups.com
 // @connect      www.dhl.com
+// @run-at       document-start
 // @updateURL    https://raw.githubusercontent.com/spiralvawe/po-work-tm-userscript/main/moysklad-mail-search.user.js
 // @downloadURL  https://raw.githubusercontent.com/spiralvawe/po-work-tm-userscript/main/moysklad-mail-search.user.js
 // @supportURL   https://github.com/spiralvawe/po-work-tm/issues
@@ -34,10 +36,13 @@
     PANEL_TOP: '216px',
     STORAGE_KEYS: {
       userToken: 'ms_mail_search_user_token',
-      gmailAccountIndex: 'ms_mail_search_gmail_account_index'
+      gmailAccountIndex: 'ms_mail_search_gmail_account_index',
+      trackingHelperResultPrefix: 'ms_mail_search_tracking_helper_result_',
+      trackingHelperSessionPrefix: 'ms_mail_search_tracking_helper_session_'
     },
     POLL_INTERVAL_MS: 500,
-    SECONDARY_PREFETCH_DELAY_MS: 1200
+    SECONDARY_PREFETCH_DELAY_MS: 1200,
+    TRACKING_HELPER_TIMEOUT_MS: 30000
   };
 
   const state = {
@@ -516,25 +521,11 @@
     return state.trackingEntries.slice();
   }
 
-  function gmRequest(options) {
-    return new Promise(function (resolve, reject) {
-      GM_xmlhttpRequest({
-        method: options.method || 'GET',
-        url: options.url,
-        headers: options.headers || {},
-        data: options.data,
-        timeout: options.timeout || 15000,
-        onload: function (response) {
-          resolve(response);
-        },
-        onerror: function (error) {
-          reject(new Error(error && error.error ? error.error : 'GM request failed'));
-        },
-        ontimeout: function () {
-          reject(new Error('GM request timed out'));
-        }
-      });
-    });
+  function isSchenkerTrackingPage() {
+    var hostname = String(window.location.hostname || '').toLowerCase();
+    var pathname = String(window.location.pathname || '').toLowerCase();
+
+    return hostname === 'www.dbschenker.com' && pathname.indexOf('/app/tracking-public/') === 0;
   }
 
   function tryParseJson(text) {
@@ -551,188 +542,463 @@
     }
   }
 
-  function scoreTrackingEventArray(items) {
-    var score = 0;
-
-    (items || []).forEach(function (item) {
-      var keys;
-
-      if (!item || typeof item !== 'object' || Array.isArray(item)) {
-        return;
-      }
-
-      keys = Object.keys(item);
-
-      if (keys.some(function (key) { return /date|time|timestamp/i.test(key); })) {
-        score += 2;
-      }
-
-      if (keys.some(function (key) { return /event|status|description|milestone/i.test(key); })) {
-        score += 2;
-      }
-
-      if (keys.some(function (key) { return /location|city|country|place/i.test(key); })) {
-        score += 1;
-      }
-    });
-
-    return score;
+  function buildTrackingHelperStorageKey(requestId) {
+    return APP_CONFIG.STORAGE_KEYS.trackingHelperResultPrefix + String(requestId || '').trim();
   }
 
-  function findBestTrackingEventArray(value, bestMatch) {
-    var currentBest = bestMatch || {
-      score: 0,
-      value: null
-    };
-
-    if (!value || typeof value !== 'object') {
-      return currentBest;
-    }
-
-    if (Array.isArray(value)) {
-      if (value.length && scoreTrackingEventArray(value) > currentBest.score) {
-        currentBest = {
-          score: scoreTrackingEventArray(value),
-          value: value
-        };
-      }
-
-      value.forEach(function (item) {
-        currentBest = findBestTrackingEventArray(item, currentBest);
-      });
-
-      return currentBest;
-    }
-
-    Object.keys(value).forEach(function (key) {
-      currentBest = findBestTrackingEventArray(value[key], currentBest);
-    });
-
-    return currentBest;
+  function buildTrackingHelperSessionKey(name) {
+    return APP_CONFIG.STORAGE_KEYS.trackingHelperSessionPrefix + String(name || '').trim();
   }
 
-  function findTrackingSummaryValue(value, patterns) {
-    var matchedValue = '';
+  function readSchenkerHelperRequestFromUrl() {
+    var params = new URLSearchParams(window.location.search || '');
+    var helperFlag = String(params.get('tmSchenkerHelper') || '').trim();
+    var requestId = String(params.get('tmTrackingRequestId') || '').trim();
+    var trackingNumber = String(params.get('tmTrackingNumber') || '').trim().toUpperCase();
 
-    if (!value || typeof value !== 'object') {
-      return '';
-    }
-
-    Object.keys(value).some(function (key) {
-      var item = value[key];
-
-      if (patterns.test(key) && typeof item === 'string' && normalizeWhitespace(item)) {
-        matchedValue = normalizeWhitespace(item);
-        return true;
-      }
-
-      if (item && typeof item === 'object') {
-        matchedValue = findTrackingSummaryValue(item, patterns);
-        return Boolean(matchedValue);
-      }
-
-      return false;
-    });
-
-    return matchedValue;
-  }
-
-  function normalizeTrackingEvent(item) {
-    var dateValue = '';
-    var title = '';
-    var description = '';
-    var location = '';
-    var source = item || {};
-
-    Object.keys(source).forEach(function (key) {
-      var value = source[key];
-
-      if (value == null || value === '') {
-        return;
-      }
-
-      if (!dateValue && /date|time|timestamp/i.test(key)) {
-        dateValue = String(value);
-        return;
-      }
-
-      if (!title && /event|status|milestone/i.test(key)) {
-        title = normalizeWhitespace(value);
-        return;
-      }
-
-      if (!description && /description|comment|reason|details?/i.test(key)) {
-        description = normalizeWhitespace(value);
-        return;
-      }
-
-      if (!location && /location|city|country|place/i.test(key)) {
-        location = normalizeWhitespace(value);
-      }
-    });
-
-    if (!title && description) {
-      title = description;
-      description = '';
+    if (helperFlag !== '1' || !requestId || !trackingNumber) {
+      return null;
     }
 
     return {
-      date: dateValue,
+      requestId: requestId,
+      trackingNumber: trackingNumber
+    };
+  }
+
+  function persistSchenkerHelperRequestFromUrl() {
+    var request = readSchenkerHelperRequestFromUrl();
+
+    if (!request) {
+      return null;
+    }
+
+    try {
+      window.sessionStorage.setItem(buildTrackingHelperSessionKey('active'), '1');
+      window.sessionStorage.setItem(buildTrackingHelperSessionKey('requestId'), request.requestId);
+      window.sessionStorage.setItem(buildTrackingHelperSessionKey('trackingNumber'), request.trackingNumber);
+    } catch (error) {
+      return request;
+    }
+
+    return request;
+  }
+
+  function getPersistedSchenkerHelperRequest() {
+    try {
+      if (window.sessionStorage.getItem(buildTrackingHelperSessionKey('active')) !== '1') {
+        return null;
+      }
+
+      return {
+        requestId: String(window.sessionStorage.getItem(buildTrackingHelperSessionKey('requestId')) || '').trim(),
+        trackingNumber: String(window.sessionStorage.getItem(buildTrackingHelperSessionKey('trackingNumber')) || '').trim().toUpperCase()
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function clearPersistedSchenkerHelperRequest() {
+    try {
+      window.sessionStorage.removeItem(buildTrackingHelperSessionKey('active'));
+      window.sessionStorage.removeItem(buildTrackingHelperSessionKey('requestId'));
+      window.sessionStorage.removeItem(buildTrackingHelperSessionKey('trackingNumber'));
+    } catch (error) {
+      // Ignore storage cleanup failures.
+    }
+  }
+
+  function buildSchenkerHelperRequestId() {
+    return 'schenker-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+  }
+
+  function buildSchenkerHelperUrl(entry, requestId) {
+    var url = new URL(entry && entry.url ? entry.url : 'https://www.dbschenker.com/app/tracking-public/');
+
+    url.searchParams.set('refNumber', String(entry && entry.trackingNumber || '').trim());
+    url.searchParams.set('tmSchenkerHelper', '1');
+    url.searchParams.set('tmTrackingRequestId', String(requestId || '').trim());
+    url.searchParams.set('tmTrackingNumber', String(entry && entry.trackingNumber || '').trim());
+
+    return url.toString();
+  }
+
+  function normalizeSchenkerLocation(location) {
+    var parts = [];
+
+    if (!location || typeof location !== 'object') {
+      return '';
+    }
+
+    if (normalizeWhitespace(location.name)) {
+      parts.push(normalizeWhitespace(location.name));
+    }
+
+    if (normalizeWhitespace(location.country)) {
+      parts.push(normalizeWhitespace(location.country));
+    } else if (normalizeWhitespace(location.countryCode)) {
+      parts.push(normalizeWhitespace(location.countryCode));
+    }
+
+    return parts.join(', ');
+  }
+
+  function getSchenkerProgressStepLabel(step) {
+    var normalized = String(step || '').trim().toUpperCase();
+
+    if (normalized === 'BOOKED') {
+      return 'Забронирован';
+    }
+
+    if (normalized === 'TRANSPORTATION') {
+      return 'В пути';
+    }
+
+    if (normalized === 'DISPATCHING_CENTER') {
+      return 'В распределительном центре';
+    }
+
+    if (normalized === 'IN_DELIVERY') {
+      return 'На доставке';
+    }
+
+    if (normalized === 'DELIVERED') {
+      return 'Доставлен';
+    }
+
+    return normalized;
+  }
+
+  function normalizeSchenkerEvent(item) {
+    var location = item && item.location ? normalizeSchenkerLocation(item.location) : '';
+    var title = normalizeWhitespace(item && item.comment || '');
+    var code = normalizeWhitespace(item && item.code || '');
+
+    if (!title) {
+      title = code || 'Событие';
+    }
+
+    return {
+      date: String(item && (item.date || item.createdAt) || ''),
       title: title,
-      description: description,
+      description: code && code !== title ? code : '',
       location: location
     };
   }
 
-  function parseSchenkerTrackingResponse(json, entry, sourceUrl) {
-    var eventMatch = findBestTrackingEventArray(json);
-    var events = eventMatch.value ? eventMatch.value.map(normalizeTrackingEvent).filter(function (item) {
-      return item.title || item.description || item.location || item.date;
-    }) : [];
-    var latestEvent = events.length ? events[0] : null;
-    var currentStatus = findTrackingSummaryValue(
-      json,
-      /current.?status|status.?description|shipment.?status|milestone|status$/i
-    ) || (latestEvent ? latestEvent.title : '');
-
+  function normalizeSchenkerTripPoint(item) {
     return {
-      success: Boolean(currentStatus || events.length),
-      carrier: entry.carrier,
-      trackingNumber: entry.trackingNumber,
-      currentStatus: currentStatus || 'Статус найден, но не удалось красиво распознать поле.',
-      history: events,
-      officialUrl: entry.url,
-      sourceUrl: sourceUrl
+      date: String(item && item.lastEventDate || ''),
+      title: normalizeWhitespace(item && item.lastEventCode || '') || 'Точка маршрута',
+      description: '',
+      location: normalizeWhitespace(
+        item && item.latitude != null && item.longitude != null
+          ? String(item.latitude) + ', ' + String(item.longitude)
+          : ''
+      )
     };
   }
 
-  async function tryFetchSchenkerTracking(entry) {
-    var candidateUrls = [
-      'https://www.dbschenker.com/nges-portal/api/public/tracking-public?refNumber=' + encodeURIComponent(entry.trackingNumber),
-      'https://www.dbschenker.com/nges-portal/api/public/tracking-public?reference=' + encodeURIComponent(entry.trackingNumber),
-      'https://www.dbschenker.com/nges-portal/api/public/tracking-public?query=' + encodeURIComponent(entry.trackingNumber)
-    ];
-    var index;
-    var response;
-    var json;
+  function buildSchenkerTrackingResult(entry, helperPayload) {
+    var shipments = helperPayload && helperPayload.shipments;
+    var details = helperPayload && helperPayload.details;
+    var trip = helperPayload && helperPayload.trip;
+    var shipmentItem = shipments && Array.isArray(shipments.result) && shipments.result.length ? shipments.result[0] : null;
+    var detailEvents = details && Array.isArray(details.events) ? details.events.slice() : [];
+    var latestEvent = detailEvents.length ? detailEvents[detailEvents.length - 1] : null;
+    var history = detailEvents.slice().reverse().map(normalizeSchenkerEvent);
+    var tripHistory = trip && Array.isArray(trip.trip) ? trip.trip.slice().reverse().map(normalizeSchenkerTripPoint) : [];
+    var progressStep = String(details && details.progressBar && details.progressBar.activeStep || '').trim().toUpperCase();
+    var delivered = progressStep === 'DELIVERED' || String(latestEvent && latestEvent.code || '').trim().toUpperCase() === 'DLV';
+    var currentStatus = normalizeWhitespace(latestEvent && latestEvent.comment || '') || getSchenkerProgressStepLabel(progressStep);
+    var deliveryDate = details && details.deliveryDate ? details.deliveryDate : null;
 
-    for (index = 0; index < candidateUrls.length; index += 1) {
-      try {
-        response = await gmRequest({
-          method: 'GET',
-          url: candidateUrls[index],
-          headers: {
-            Accept: 'application/json,text/plain,*/*'
-          }
-        });
-        json = tryParseJson(response.responseText);
+    return {
+      success: Boolean(shipmentItem && details && history.length),
+      carrier: entry.carrier,
+      trackingNumber: entry.trackingNumber,
+      currentStatus: currentStatus || 'Статус найден',
+      history: history,
+      tripHistory: tripHistory,
+      officialUrl: entry.url,
+      sourceUrl: shipmentItem ? 'https://www.dbschenker.com/nges-portal/api/public/tracking-public/shipments?query=' + encodeURIComponent(entry.trackingNumber) : entry.url,
+      shipmentId: normalizeWhitespace(shipmentItem && shipmentItem.id || ''),
+      shipmentNumber: normalizeWhitespace(details && details.sttNumber || ''),
+      progressPercent: shipmentItem && typeof shipmentItem.percentageProgress === 'number' ? shipmentItem.percentageProgress : null,
+      progressStep: progressStep,
+      progressStepLabel: getSchenkerProgressStepLabel(progressStep),
+      delivered: delivered,
+      deliveredAt: delivered && latestEvent ? String(latestEvent.date || latestEvent.createdAt || '') : '',
+      estimatedDeliveryAt: String(deliveryDate && (deliveryDate.agreed || deliveryDate.estimated) || shipmentItem && shipmentItem.endDate || ''),
+      originCity: normalizeWhitespace(details && details.location && details.location.shipperPlace && details.location.shipperPlace.city || shipmentItem && shipmentItem.fromLocation || ''),
+      destinationCity: normalizeWhitespace(details && details.location && details.location.deliverTo && details.location.deliverTo.city || shipmentItem && shipmentItem.toLocation || ''),
+      receivingOfficeCity: normalizeWhitespace(details && details.location && details.location.receivingOffice && details.location.receivingOffice.city || ''),
+      product: normalizeWhitespace(details && details.product || ''),
+      references: details && details.references ? details.references : null
+    };
+  }
 
-        if (response.status >= 200 && response.status < 300 && json) {
-          return parseSchenkerTrackingResponse(json, entry, candidateUrls[index]);
-        }
-      } catch (error) {
-        // Try the next public probe URL.
+  function installSchenkerHelperPageBridge() {
+    var script;
+    var container;
+    var request = getPersistedSchenkerHelperRequest();
+
+    if (!request || !request.requestId || !request.trackingNumber || document.getElementById('tm-ms-schenker-helper-bridge')) {
+      return;
+    }
+
+    script = document.createElement('script');
+    script.id = 'tm-ms-schenker-helper-bridge';
+    script.textContent = '(' + function (requestId, trackingNumber, timeoutMs) {
+      var state = {
+        requestId: requestId,
+        trackingNumber: trackingNumber,
+        shipments: null,
+        details: null,
+        trip: null,
+        finished: false
+      };
+
+      function emit(type, payload) {
+        window.postMessage({
+          source: 'tm-ms-schenker-helper',
+          type: type,
+          requestId: requestId,
+          payload: payload || null
+        }, '*');
       }
+
+      function finish(type, payload) {
+        if (state.finished) {
+          return;
+        }
+
+        state.finished = true;
+        emit(type, payload);
+      }
+
+      function handlePayload(url, status, text) {
+        var json;
+
+        if (status < 200 || status >= 300 || !text) {
+          return;
+        }
+
+        try {
+          json = JSON.parse(text);
+        } catch (error) {
+          return;
+        }
+
+        if (/\/tracking-public\/shipments\?/.test(url)) {
+          state.shipments = json;
+        } else if (/\/tracking-public\/shipments\/land\/[^/?]+\/trip(?:\?|$)/.test(url)) {
+          state.trip = json;
+        } else if (/\/tracking-public\/shipments\/land\/[^/?]+(?:\?|$)/.test(url)) {
+          state.details = json;
+        }
+
+        if (state.details) {
+          finish('result', {
+            shipments: state.shipments,
+            details: state.details,
+            trip: state.trip,
+            capturedAt: new Date().toISOString()
+          });
+        }
+      }
+
+      function wrapFetch() {
+        var originalFetch = window.fetch;
+
+        if (typeof originalFetch !== 'function') {
+          return;
+        }
+
+        window.fetch = function () {
+          var input = arguments[0];
+          var requestUrl = String(input && input.url || input || '');
+
+          return originalFetch.apply(this, arguments).then(function (response) {
+            var url = requestUrl || String(response.url || '');
+            var clone = response.clone();
+
+            clone.text().then(function (text) {
+              handlePayload(url, response.status, text);
+            }).catch(function () {
+              return null;
+            });
+
+            return response;
+          });
+        };
+      }
+
+      function wrapXhr() {
+        var originalOpen = XMLHttpRequest.prototype.open;
+        var originalSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function (method, url) {
+          this.__tmMsTrackingUrl = String(url || '');
+          return originalOpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function () {
+          this.addEventListener('loadend', function () {
+            var bodyText = '';
+
+            try {
+              bodyText = String(this.responseText || '');
+            } catch (error) {
+              bodyText = '';
+            }
+
+            handlePayload(String(this.__tmMsTrackingUrl || ''), this.status, bodyText);
+          });
+
+          return originalSend.apply(this, arguments);
+        };
+      }
+
+      wrapFetch();
+      wrapXhr();
+
+      window.setTimeout(function () {
+        finish('error', {
+          message: 'Schenker helper timed out before tracking details were captured.'
+        });
+      }, timeoutMs);
+    } + ')(' + JSON.stringify(request.requestId) + ',' + JSON.stringify(request.trackingNumber) + ',' + JSON.stringify(APP_CONFIG.TRACKING_HELPER_TIMEOUT_MS) + ');';
+
+    container = document.documentElement || document.head || document.body;
+
+    if (!container) {
+      return;
+    }
+
+    container.appendChild(script);
+    script.remove();
+  }
+
+  function startSchenkerTrackingHelperMode() {
+    var request = persistSchenkerHelperRequestFromUrl() || getPersistedSchenkerHelperRequest();
+    var storageKey;
+    var isResolved = false;
+
+    if (!request || !request.requestId || !request.trackingNumber) {
+      return false;
+    }
+
+    storageKey = buildTrackingHelperStorageKey(request.requestId);
+
+    function finalize(payload) {
+      if (isResolved) {
+        return;
+      }
+
+      isResolved = true;
+      GM_setValue(storageKey, JSON.stringify(payload));
+      clearPersistedSchenkerHelperRequest();
+      window.setTimeout(function () {
+        try {
+          window.close();
+        } catch (error) {
+          // Ignore close failures.
+        }
+      }, 250);
+    }
+
+    window.addEventListener('message', function (event) {
+      var data = event && event.data;
+
+      if (!data || data.source !== 'tm-ms-schenker-helper' || data.requestId !== request.requestId) {
+        return;
+      }
+
+      if (data.type === 'result' && data.payload) {
+        finalize({
+          requestId: request.requestId,
+          trackingNumber: request.trackingNumber,
+          ok: true,
+          payload: data.payload
+        });
+        return;
+      }
+
+      if (data.type === 'error') {
+        finalize({
+          requestId: request.requestId,
+          trackingNumber: request.trackingNumber,
+          ok: false,
+          error: normalizeWhitespace(data.payload && data.payload.message || '') || 'Schenker helper failed.'
+        });
+      }
+    });
+
+    installSchenkerHelperPageBridge();
+
+    window.setTimeout(function () {
+      finalize({
+        requestId: request.requestId,
+        trackingNumber: request.trackingNumber,
+        ok: false,
+        error: 'Таймаут ожидания ответа от страницы Schenker.'
+      });
+    }, APP_CONFIG.TRACKING_HELPER_TIMEOUT_MS + 1000);
+
+    return true;
+  }
+
+  function waitForTrackingHelperResult(requestId, timeoutMs) {
+    var storageKey = buildTrackingHelperStorageKey(requestId);
+    var startedAt = Date.now();
+
+    return new Promise(function (resolve) {
+      function poll() {
+        var payload = tryParseJson(GM_getValue(storageKey, ''));
+
+        if (payload && payload.requestId === requestId) {
+          GM_setValue(storageKey, '');
+          resolve(payload);
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+          resolve(null);
+          return;
+        }
+
+        window.setTimeout(poll, APP_CONFIG.POLL_INTERVAL_MS);
+      }
+
+      poll();
+    });
+  }
+
+  async function tryFetchSchenkerTracking(entry) {
+    var requestId = buildSchenkerHelperRequestId();
+    var helperUrl = buildSchenkerHelperUrl(entry, requestId);
+    var helperWindow = window.open(helperUrl, '_blank', 'popup,width=1180,height=900');
+    var helperResponse;
+
+    if (!helperWindow) {
+      return {
+        success: false,
+        carrier: entry.carrier,
+        trackingNumber: entry.trackingNumber,
+        currentStatus: '',
+        history: [],
+        officialUrl: entry.url,
+        sourceUrl: entry.url,
+        error: 'Браузер заблокировал служебное окно Schenker. Разреши pop-up для Schenker и повтори проверку.'
+      };
+    }
+
+    helperResponse = await waitForTrackingHelperResult(requestId, APP_CONFIG.TRACKING_HELPER_TIMEOUT_MS + 2000);
+
+    if (helperResponse && helperResponse.ok && helperResponse.payload) {
+      return buildSchenkerTrackingResult(entry, helperResponse.payload);
     }
 
     return {
@@ -743,7 +1009,7 @@
       history: [],
       officialUrl: entry.url,
       sourceUrl: entry.url,
-      error: 'Не удалось получить структурированный ответ от публичного сервиса Schenker. Открой официальный трекинг по ссылке.'
+      error: normalizeWhitespace(helperResponse && helperResponse.error || '') || 'Не удалось получить структурированный ответ от страницы Schenker.'
     };
   }
 
@@ -1705,11 +1971,40 @@
       html += '<div style="font-weight:bold;font-size:15px;margin-bottom:4px;">' + escapeHtml(entry.trackingNumber || '') + '</div>';
       html += '<div style="font-size:12px;color:#666;">' + escapeHtml(entry.carrierLabel || '') + '</div>';
       html += '</div>';
-      html += '<div style="font-size:12px;color:' + statusColor + ';font-weight:bold;text-align:right;">' + escapeHtml(entry.success ? 'Статус загружен' : 'Официальный fallback') + '</div>';
+      html += '<div style="font-size:12px;color:' + statusColor + ';font-weight:bold;text-align:right;">' + escapeHtml(
+        entry.success
+          ? (entry.delivered ? 'Доставлено' : 'Статус загружен')
+          : 'Официальный fallback'
+      ) + '</div>';
       html += '</div>';
 
       if (entry.currentStatus) {
         html += '<div style="margin-bottom:8px;"><b>Текущий статус:</b> <span style="color:' + statusColor + ';">' + escapeHtml(entry.currentStatus) + '</span></div>';
+      }
+
+      if (entry.success && entry.carrier === 'schenker') {
+        html += '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;font-size:12px;color:#374151;">';
+        html += '<div><b>До склада:</b> ' + escapeHtml(entry.delivered ? 'Да' : 'Еще в пути') + '</div>';
+
+        if (entry.deliveredAt) {
+          html += '<div><b>Дата доставки:</b> ' + escapeHtml(formatTrackingEventDate(entry.deliveredAt)) + '</div>';
+        } else if (entry.estimatedDeliveryAt) {
+          html += '<div><b>Плановая доставка:</b> ' + escapeHtml(formatTrackingEventDate(entry.estimatedDeliveryAt)) + '</div>';
+        }
+
+        if (entry.progressStepLabel) {
+          html += '<div><b>Этап:</b> ' + escapeHtml(entry.progressStepLabel) + '</div>';
+        }
+
+        if (entry.originCity || entry.destinationCity) {
+          html += '<div><b>Маршрут:</b> ' + escapeHtml((entry.originCity || 'Неизвестно') + ' -> ' + (entry.destinationCity || 'Неизвестно')) + '</div>';
+        }
+
+        if (entry.receivingOfficeCity) {
+          html += '<div><b>Принимающий терминал:</b> ' + escapeHtml(entry.receivingOfficeCity) + '</div>';
+        }
+
+        html += '</div>';
       }
 
       if (entry.error) {
@@ -3147,7 +3442,9 @@
     }, APP_CONFIG.SECONDARY_PREFETCH_DELAY_MS);
   }
 
-  if (document.readyState === 'loading') {
+  if (isSchenkerTrackingPage()) {
+    startSchenkerTrackingHelperMode();
+  } else if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
