@@ -1,18 +1,13 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.18
+// @version      0.1.19
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
-// @match        https://www.dbschenker.com/app/tracking-public/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
-// @grant        GM_xmlhttpRequest
-// @connect      www.dbschenker.com
-// @connect      www.ups.com
-// @connect      www.dhl.com
 // @run-at       document-start
 // @updateURL    https://raw.githubusercontent.com/spiralvawe/po-work-tm-userscript/main/moysklad-mail-search.user.js
 // @downloadURL  https://raw.githubusercontent.com/spiralvawe/po-work-tm-userscript/main/moysklad-mail-search.user.js
@@ -27,22 +22,17 @@
     DEFAULT_USER_TOKEN: '',
     SEARCH_BUTTON_ID: 'tm-ms-mail-search-button',
     PLACEMENT_BUTTON_ID: 'tm-ms-placement-button',
-    TRACKING_BUTTON_ID: 'tm-ms-tracking-button',
     PANEL_ID: 'tm-ms-mail-search-panel',
     PANEL_TITLE_CLASS: 'tm-ms-panel-title',
     STATUS_ID: 'tm-ms-mail-search-status',
     DEFAULT_GMAIL_ACCOUNT_INDEX: 1,
-    TRACKING_BUTTON_TOP: '166px',
-    PANEL_TOP: '216px',
+    PANEL_TOP: '168px',
     STORAGE_KEYS: {
       userToken: 'ms_mail_search_user_token',
-      gmailAccountIndex: 'ms_mail_search_gmail_account_index',
-      trackingHelperResultPrefix: 'ms_mail_search_tracking_helper_result_',
-      trackingHelperSessionPrefix: 'ms_mail_search_tracking_helper_session_'
+      gmailAccountIndex: 'ms_mail_search_gmail_account_index'
     },
     POLL_INTERVAL_MS: 500,
-    SECONDARY_PREFETCH_DELAY_MS: 1200,
-    TRACKING_HELPER_TIMEOUT_MS: 30000
+    SECONDARY_PREFETCH_DELAY_MS: 1200
   };
 
   const state = {
@@ -58,13 +48,6 @@
     lastPlacementDownloadUrl: '',
     placementDraftId: '',
     placementEmailSent: false,
-    trackingFieldValue: '',
-    trackingSourceType: '',
-    trackingSourceLabel: '',
-    trackingSourceId: '',
-    trackingSourceHref: '',
-    trackingEntries: [],
-    trackingLastResult: null,
     isPanelOpen: false,
     activePanelMode: 'search'
   };
@@ -195,7 +178,6 @@
     setStatus('Настройки очищены', 'neutral');
     hidePanel();
     setPlacementButtonVisible(false);
-    setTrackingButtonVisible(false);
   }
 
   function registerMenuCommands() {
@@ -309,18 +291,6 @@
     ].join('\n');
   }
 
-  function formatTrackingEventDate(value) {
-    if (!value) {
-      return '';
-    }
-
-    try {
-      return new Date(value).toLocaleString('ru-RU');
-    } catch (error) {
-      return String(value);
-    }
-  }
-
   function isPurchaseOrderPage() {
     var hash = window.location.hash || '';
     return hash.startsWith('#purchaseorder/edit');
@@ -337,723 +307,6 @@
 
     var params = new URLSearchParams(parts[1]);
     return params.get('id');
-  }
-
-  function cleanTrackingToken(token) {
-    return String(token || '')
-      .replace(/^[^A-Za-z0-9]+/, '')
-      .replace(/[^A-Za-z0-9-]+$/, '')
-      .trim();
-  }
-
-  function isSchenkerTrackingNumber(value) {
-    return /^\d{6}-\d{6}$/.test(String(value || '').trim());
-  }
-
-  function isUpsTrackingNumber(value) {
-    return /^1Z[0-9A-Z]{16}$/i.test(String(value || '').trim());
-  }
-
-  function isDhlTrackingNumber(value) {
-    return /^(?:\d{10}|\d{20})$/.test(String(value || '').trim());
-  }
-
-  function detectCarrierFromTrackingToken(token, carrierHint) {
-    var normalizedToken = String(token || '').trim().toUpperCase();
-    var normalizedHint = String(carrierHint || '').trim().toLowerCase();
-
-    if (!normalizedToken) {
-      return '';
-    }
-
-    if (isSchenkerTrackingNumber(normalizedToken)) {
-      return 'schenker';
-    }
-
-    if (isUpsTrackingNumber(normalizedToken)) {
-      return 'ups';
-    }
-
-    if (isDhlTrackingNumber(normalizedToken)) {
-      return 'dhl';
-    }
-
-    if (normalizedHint === 'dhl' && /^[A-Z0-9-]{8,25}$/.test(normalizedToken)) {
-      return 'dhl';
-    }
-
-    if (normalizedHint === 'ups' && /^[A-Z0-9-]{8,25}$/.test(normalizedToken)) {
-      return 'ups';
-    }
-
-    if (normalizedHint === 'schenker' && /^[A-Z0-9-]{8,25}$/.test(normalizedToken)) {
-      return 'schenker';
-    }
-
-    return '';
-  }
-
-  function getCarrierLabel(carrier) {
-    if (carrier === 'schenker') {
-      return 'Schenker';
-    }
-
-    if (carrier === 'ups') {
-      return 'UPS';
-    }
-
-    if (carrier === 'dhl') {
-      return 'DHL';
-    }
-
-    return 'Неизвестно';
-  }
-
-  function buildTrackingUrl(entry) {
-    var carrier = entry && entry.carrier;
-    var trackingNumber = entry && entry.trackingNumber ? encodeURIComponent(entry.trackingNumber) : '';
-
-    if (!trackingNumber) {
-      return '';
-    }
-
-    if (carrier === 'schenker') {
-      return 'https://www.dbschenker.com/app/tracking-public/?refNumber=' + trackingNumber;
-    }
-
-    if (carrier === 'ups') {
-      return 'https://www.ups.com/track?tracknum=' + trackingNumber;
-    }
-
-    if (carrier === 'dhl') {
-      return 'https://www.dhl.com/global-en/home/tracking.html?tracking-id=' + trackingNumber + '&submit=1';
-    }
-
-    return '';
-  }
-
-  function buildTrackingEntry(trackingNumber, carrier, rawToken) {
-    var normalizedTrackingNumber = String(trackingNumber || '').trim();
-    var resolvedCarrier = carrier || '';
-    var entry = {
-      rawToken: String(rawToken || normalizedTrackingNumber).trim(),
-      trackingNumber: normalizedTrackingNumber,
-      carrier: resolvedCarrier,
-      carrierLabel: getCarrierLabel(resolvedCarrier)
-    };
-
-    entry.url = buildTrackingUrl(entry);
-    return entry;
-  }
-
-  function extractTrackingEntriesFromText(value) {
-    var normalizedValue = normalizeWhitespace(value);
-    var parts;
-    var entries = [];
-    var seen = {};
-    var carrierHint = '';
-
-    if (!normalizedValue) {
-      return [];
-    }
-
-    parts = normalizedValue.split(/[\s,;|/]+/);
-
-    parts.forEach(function (part) {
-      var cleanedToken = cleanTrackingToken(part);
-      var normalizedToken = cleanedToken.toUpperCase();
-      var carrier;
-
-      if (!cleanedToken) {
-        return;
-      }
-
-      if (/^(schenker|dbschenker)$/i.test(cleanedToken)) {
-        carrierHint = 'schenker';
-        return;
-      }
-
-      if (/^ups$/i.test(cleanedToken)) {
-        carrierHint = 'ups';
-        return;
-      }
-
-      if (/^dhl$/i.test(cleanedToken)) {
-        carrierHint = 'dhl';
-        return;
-      }
-
-      carrier = detectCarrierFromTrackingToken(normalizedToken, carrierHint);
-
-      if (!carrier) {
-        return;
-      }
-
-      if (seen[normalizedToken]) {
-        return;
-      }
-
-      seen[normalizedToken] = true;
-      entries.push(buildTrackingEntry(normalizedToken, carrier, cleanedToken));
-    });
-
-    return entries;
-  }
-
-  function syncTrackingStateFromPlacementData(data) {
-    var fieldValue = normalizeWhitespace(data && data.trackingRawValue);
-
-    state.trackingFieldValue = fieldValue;
-    state.trackingSourceType = String(data && data.trackingSourceType || '').trim();
-    state.trackingSourceLabel = String(data && data.trackingSourceLabel || '').trim();
-    state.trackingSourceId = String(data && data.trackingSourceId || '').trim();
-    state.trackingSourceHref = String(data && data.trackingSourceHref || '').trim();
-    state.trackingEntries = extractTrackingEntriesFromText(fieldValue);
-
-    return state.trackingEntries.slice();
-  }
-
-  function getCurrentTrackingEntries() {
-    if (state.placementMetaResult && state.placementMetaResult.ok && state.placementMetaResult.data) {
-      return syncTrackingStateFromPlacementData(state.placementMetaResult.data);
-    }
-
-    return state.trackingEntries.slice();
-  }
-
-  function isSchenkerTrackingPage() {
-    var hostname = String(window.location.hostname || '').toLowerCase();
-    var pathname = String(window.location.pathname || '').toLowerCase();
-
-    return hostname === 'www.dbschenker.com' && pathname.indexOf('/app/tracking-public/') === 0;
-  }
-
-  function tryParseJson(text) {
-    var trimmed = String(text || '').trim();
-
-    if (!trimmed || (trimmed.charAt(0) !== '{' && trimmed.charAt(0) !== '[')) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(trimmed);
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function buildTrackingHelperStorageKey(requestId) {
-    return APP_CONFIG.STORAGE_KEYS.trackingHelperResultPrefix + String(requestId || '').trim();
-  }
-
-  function buildTrackingHelperSessionKey(name) {
-    return APP_CONFIG.STORAGE_KEYS.trackingHelperSessionPrefix + String(name || '').trim();
-  }
-
-  function readSchenkerHelperRequestFromUrl() {
-    var params = new URLSearchParams(window.location.search || '');
-    var helperFlag = String(params.get('tmSchenkerHelper') || '').trim();
-    var requestId = String(params.get('tmTrackingRequestId') || '').trim();
-    var trackingNumber = String(params.get('tmTrackingNumber') || '').trim().toUpperCase();
-
-    if (helperFlag !== '1' || !requestId || !trackingNumber) {
-      return null;
-    }
-
-    return {
-      requestId: requestId,
-      trackingNumber: trackingNumber
-    };
-  }
-
-  function persistSchenkerHelperRequestFromUrl() {
-    var request = readSchenkerHelperRequestFromUrl();
-
-    if (!request) {
-      return null;
-    }
-
-    try {
-      window.sessionStorage.setItem(buildTrackingHelperSessionKey('active'), '1');
-      window.sessionStorage.setItem(buildTrackingHelperSessionKey('requestId'), request.requestId);
-      window.sessionStorage.setItem(buildTrackingHelperSessionKey('trackingNumber'), request.trackingNumber);
-    } catch (error) {
-      return request;
-    }
-
-    return request;
-  }
-
-  function getPersistedSchenkerHelperRequest() {
-    try {
-      if (window.sessionStorage.getItem(buildTrackingHelperSessionKey('active')) !== '1') {
-        return null;
-      }
-
-      return {
-        requestId: String(window.sessionStorage.getItem(buildTrackingHelperSessionKey('requestId')) || '').trim(),
-        trackingNumber: String(window.sessionStorage.getItem(buildTrackingHelperSessionKey('trackingNumber')) || '').trim().toUpperCase()
-      };
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function clearPersistedSchenkerHelperRequest() {
-    try {
-      window.sessionStorage.removeItem(buildTrackingHelperSessionKey('active'));
-      window.sessionStorage.removeItem(buildTrackingHelperSessionKey('requestId'));
-      window.sessionStorage.removeItem(buildTrackingHelperSessionKey('trackingNumber'));
-    } catch (error) {
-      // Ignore storage cleanup failures.
-    }
-  }
-
-  function buildSchenkerHelperRequestId() {
-    return 'schenker-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
-  }
-
-  function buildSchenkerHelperUrl(entry, requestId) {
-    var url = new URL(entry && entry.url ? entry.url : 'https://www.dbschenker.com/app/tracking-public/');
-
-    url.searchParams.set('refNumber', String(entry && entry.trackingNumber || '').trim());
-    url.searchParams.set('tmSchenkerHelper', '1');
-    url.searchParams.set('tmTrackingRequestId', String(requestId || '').trim());
-    url.searchParams.set('tmTrackingNumber', String(entry && entry.trackingNumber || '').trim());
-
-    return url.toString();
-  }
-
-  function normalizeSchenkerLocation(location) {
-    var parts = [];
-
-    if (!location || typeof location !== 'object') {
-      return '';
-    }
-
-    if (normalizeWhitespace(location.name)) {
-      parts.push(normalizeWhitespace(location.name));
-    }
-
-    if (normalizeWhitespace(location.country)) {
-      parts.push(normalizeWhitespace(location.country));
-    } else if (normalizeWhitespace(location.countryCode)) {
-      parts.push(normalizeWhitespace(location.countryCode));
-    }
-
-    return parts.join(', ');
-  }
-
-  function getSchenkerProgressStepLabel(step) {
-    var normalized = String(step || '').trim().toUpperCase();
-
-    if (normalized === 'BOOKED') {
-      return 'Забронирован';
-    }
-
-    if (normalized === 'TRANSPORTATION') {
-      return 'В пути';
-    }
-
-    if (normalized === 'DISPATCHING_CENTER') {
-      return 'В распределительном центре';
-    }
-
-    if (normalized === 'IN_DELIVERY') {
-      return 'На доставке';
-    }
-
-    if (normalized === 'DELIVERED') {
-      return 'Доставлен';
-    }
-
-    return normalized;
-  }
-
-  function normalizeSchenkerEvent(item) {
-    var location = item && item.location ? normalizeSchenkerLocation(item.location) : '';
-    var title = normalizeWhitespace(item && item.comment || '');
-    var code = normalizeWhitespace(item && item.code || '');
-
-    if (!title) {
-      title = code || 'Событие';
-    }
-
-    return {
-      date: String(item && (item.date || item.createdAt) || ''),
-      title: title,
-      description: code && code !== title ? code : '',
-      location: location
-    };
-  }
-
-  function normalizeSchenkerTripPoint(item) {
-    return {
-      date: String(item && item.lastEventDate || ''),
-      title: normalizeWhitespace(item && item.lastEventCode || '') || 'Точка маршрута',
-      description: '',
-      location: normalizeWhitespace(
-        item && item.latitude != null && item.longitude != null
-          ? String(item.latitude) + ', ' + String(item.longitude)
-          : ''
-      )
-    };
-  }
-
-  function buildSchenkerTrackingResult(entry, helperPayload) {
-    var shipments = helperPayload && helperPayload.shipments;
-    var details = helperPayload && helperPayload.details;
-    var trip = helperPayload && helperPayload.trip;
-    var shipmentItem = shipments && Array.isArray(shipments.result) && shipments.result.length ? shipments.result[0] : null;
-    var detailEvents = details && Array.isArray(details.events) ? details.events.slice() : [];
-    var latestEvent = detailEvents.length ? detailEvents[detailEvents.length - 1] : null;
-    var history = detailEvents.slice().reverse().map(normalizeSchenkerEvent);
-    var tripHistory = trip && Array.isArray(trip.trip) ? trip.trip.slice().reverse().map(normalizeSchenkerTripPoint) : [];
-    var progressStep = String(details && details.progressBar && details.progressBar.activeStep || '').trim().toUpperCase();
-    var delivered = progressStep === 'DELIVERED' || String(latestEvent && latestEvent.code || '').trim().toUpperCase() === 'DLV';
-    var currentStatus = normalizeWhitespace(latestEvent && latestEvent.comment || '') || getSchenkerProgressStepLabel(progressStep);
-    var deliveryDate = details && details.deliveryDate ? details.deliveryDate : null;
-
-    return {
-      success: Boolean(shipmentItem && details && history.length),
-      carrier: entry.carrier,
-      trackingNumber: entry.trackingNumber,
-      currentStatus: currentStatus || 'Статус найден',
-      history: history,
-      tripHistory: tripHistory,
-      officialUrl: entry.url,
-      sourceUrl: shipmentItem ? 'https://www.dbschenker.com/nges-portal/api/public/tracking-public/shipments?query=' + encodeURIComponent(entry.trackingNumber) : entry.url,
-      shipmentId: normalizeWhitespace(shipmentItem && shipmentItem.id || ''),
-      shipmentNumber: normalizeWhitespace(details && details.sttNumber || ''),
-      progressPercent: shipmentItem && typeof shipmentItem.percentageProgress === 'number' ? shipmentItem.percentageProgress : null,
-      progressStep: progressStep,
-      progressStepLabel: getSchenkerProgressStepLabel(progressStep),
-      delivered: delivered,
-      deliveredAt: delivered && latestEvent ? String(latestEvent.date || latestEvent.createdAt || '') : '',
-      estimatedDeliveryAt: String(deliveryDate && (deliveryDate.agreed || deliveryDate.estimated) || shipmentItem && shipmentItem.endDate || ''),
-      originCity: normalizeWhitespace(details && details.location && details.location.shipperPlace && details.location.shipperPlace.city || shipmentItem && shipmentItem.fromLocation || ''),
-      destinationCity: normalizeWhitespace(details && details.location && details.location.deliverTo && details.location.deliverTo.city || shipmentItem && shipmentItem.toLocation || ''),
-      receivingOfficeCity: normalizeWhitespace(details && details.location && details.location.receivingOffice && details.location.receivingOffice.city || ''),
-      product: normalizeWhitespace(details && details.product || ''),
-      references: details && details.references ? details.references : null
-    };
-  }
-
-  function installSchenkerHelperPageBridge() {
-    var script;
-    var container;
-    var request = getPersistedSchenkerHelperRequest();
-
-    if (!request || !request.requestId || !request.trackingNumber || document.getElementById('tm-ms-schenker-helper-bridge')) {
-      return;
-    }
-
-    script = document.createElement('script');
-    script.id = 'tm-ms-schenker-helper-bridge';
-    script.textContent = '(' + function (requestId, trackingNumber, timeoutMs) {
-      var state = {
-        requestId: requestId,
-        trackingNumber: trackingNumber,
-        shipments: null,
-        details: null,
-        trip: null,
-        finished: false
-      };
-
-      function emit(type, payload) {
-        window.postMessage({
-          source: 'tm-ms-schenker-helper',
-          type: type,
-          requestId: requestId,
-          payload: payload || null
-        }, '*');
-      }
-
-      function finish(type, payload) {
-        if (state.finished) {
-          return;
-        }
-
-        state.finished = true;
-        emit(type, payload);
-      }
-
-      function handlePayload(url, status, text) {
-        var json;
-
-        if (status < 200 || status >= 300 || !text) {
-          return;
-        }
-
-        try {
-          json = JSON.parse(text);
-        } catch (error) {
-          return;
-        }
-
-        if (/\/tracking-public\/shipments\?/.test(url)) {
-          state.shipments = json;
-        } else if (/\/tracking-public\/shipments\/land\/[^/?]+\/trip(?:\?|$)/.test(url)) {
-          state.trip = json;
-        } else if (/\/tracking-public\/shipments\/land\/[^/?]+(?:\?|$)/.test(url)) {
-          state.details = json;
-        }
-
-        if (state.details) {
-          finish('result', {
-            shipments: state.shipments,
-            details: state.details,
-            trip: state.trip,
-            capturedAt: new Date().toISOString()
-          });
-        }
-      }
-
-      function wrapFetch() {
-        var originalFetch = window.fetch;
-
-        if (typeof originalFetch !== 'function') {
-          return;
-        }
-
-        window.fetch = function () {
-          var input = arguments[0];
-          var requestUrl = String(input && input.url || input || '');
-
-          return originalFetch.apply(this, arguments).then(function (response) {
-            var url = requestUrl || String(response.url || '');
-            var clone = response.clone();
-
-            clone.text().then(function (text) {
-              handlePayload(url, response.status, text);
-            }).catch(function () {
-              return null;
-            });
-
-            return response;
-          });
-        };
-      }
-
-      function wrapXhr() {
-        var originalOpen = XMLHttpRequest.prototype.open;
-        var originalSend = XMLHttpRequest.prototype.send;
-
-        XMLHttpRequest.prototype.open = function (method, url) {
-          this.__tmMsTrackingUrl = String(url || '');
-          return originalOpen.apply(this, arguments);
-        };
-
-        XMLHttpRequest.prototype.send = function () {
-          this.addEventListener('loadend', function () {
-            var bodyText = '';
-
-            try {
-              bodyText = String(this.responseText || '');
-            } catch (error) {
-              bodyText = '';
-            }
-
-            handlePayload(String(this.__tmMsTrackingUrl || ''), this.status, bodyText);
-          });
-
-          return originalSend.apply(this, arguments);
-        };
-      }
-
-      wrapFetch();
-      wrapXhr();
-
-      window.setTimeout(function () {
-        finish('error', {
-          message: 'Schenker helper timed out before tracking details were captured.'
-        });
-      }, timeoutMs);
-    } + ')(' + JSON.stringify(request.requestId) + ',' + JSON.stringify(request.trackingNumber) + ',' + JSON.stringify(APP_CONFIG.TRACKING_HELPER_TIMEOUT_MS) + ');';
-
-    container = document.documentElement || document.head || document.body;
-
-    if (!container) {
-      return;
-    }
-
-    container.appendChild(script);
-    script.remove();
-  }
-
-  function startSchenkerTrackingHelperMode() {
-    var request = persistSchenkerHelperRequestFromUrl() || getPersistedSchenkerHelperRequest();
-    var storageKey;
-    var isResolved = false;
-
-    if (!request || !request.requestId || !request.trackingNumber) {
-      return false;
-    }
-
-    storageKey = buildTrackingHelperStorageKey(request.requestId);
-
-    function finalize(payload) {
-      if (isResolved) {
-        return;
-      }
-
-      isResolved = true;
-      GM_setValue(storageKey, JSON.stringify(payload));
-      clearPersistedSchenkerHelperRequest();
-      window.setTimeout(function () {
-        try {
-          window.close();
-        } catch (error) {
-          // Ignore close failures.
-        }
-      }, 250);
-    }
-
-    window.addEventListener('message', function (event) {
-      var data = event && event.data;
-
-      if (!data || data.source !== 'tm-ms-schenker-helper' || data.requestId !== request.requestId) {
-        return;
-      }
-
-      if (data.type === 'result' && data.payload) {
-        finalize({
-          requestId: request.requestId,
-          trackingNumber: request.trackingNumber,
-          ok: true,
-          payload: data.payload
-        });
-        return;
-      }
-
-      if (data.type === 'error') {
-        finalize({
-          requestId: request.requestId,
-          trackingNumber: request.trackingNumber,
-          ok: false,
-          error: normalizeWhitespace(data.payload && data.payload.message || '') || 'Schenker helper failed.'
-        });
-      }
-    });
-
-    installSchenkerHelperPageBridge();
-
-    window.setTimeout(function () {
-      finalize({
-        requestId: request.requestId,
-        trackingNumber: request.trackingNumber,
-        ok: false,
-        error: 'Таймаут ожидания ответа от страницы Schenker.'
-      });
-    }, APP_CONFIG.TRACKING_HELPER_TIMEOUT_MS + 1000);
-
-    return true;
-  }
-
-  function waitForTrackingHelperResult(requestId, timeoutMs) {
-    var storageKey = buildTrackingHelperStorageKey(requestId);
-    var startedAt = Date.now();
-
-    return new Promise(function (resolve) {
-      function poll() {
-        var payload = tryParseJson(GM_getValue(storageKey, ''));
-
-        if (payload && payload.requestId === requestId) {
-          GM_setValue(storageKey, '');
-          resolve(payload);
-          return;
-        }
-
-        if (Date.now() - startedAt >= timeoutMs) {
-          resolve(null);
-          return;
-        }
-
-        window.setTimeout(poll, APP_CONFIG.POLL_INTERVAL_MS);
-      }
-
-      poll();
-    });
-  }
-
-  async function tryFetchSchenkerTracking(entry) {
-    var requestId = buildSchenkerHelperRequestId();
-    var helperUrl = buildSchenkerHelperUrl(entry, requestId);
-    var helperWindow = window.open(helperUrl, '_blank', 'popup,width=1180,height=900');
-    var helperResponse;
-
-    if (!helperWindow) {
-      return {
-        success: false,
-        carrier: entry.carrier,
-        trackingNumber: entry.trackingNumber,
-        currentStatus: '',
-        history: [],
-        officialUrl: entry.url,
-        sourceUrl: entry.url,
-        error: 'Браузер заблокировал служебное окно Schenker. Разреши pop-up для Schenker и повтори проверку.'
-      };
-    }
-
-    helperResponse = await waitForTrackingHelperResult(requestId, APP_CONFIG.TRACKING_HELPER_TIMEOUT_MS + 2000);
-
-    if (helperResponse && helperResponse.ok && helperResponse.payload) {
-      return buildSchenkerTrackingResult(entry, helperResponse.payload);
-    }
-
-    return {
-      success: false,
-      carrier: entry.carrier,
-      trackingNumber: entry.trackingNumber,
-      currentStatus: '',
-      history: [],
-      officialUrl: entry.url,
-      sourceUrl: entry.url,
-      error: normalizeWhitespace(helperResponse && helperResponse.error || '') || 'Не удалось получить структурированный ответ от страницы Schenker.'
-    };
-  }
-
-  async function fetchTrackingDetails(entry) {
-    if (entry.carrier === 'schenker') {
-      return tryFetchSchenkerTracking(entry);
-    }
-
-    if (entry.carrier === 'dhl') {
-      return {
-        success: false,
-        carrier: entry.carrier,
-        trackingNumber: entry.trackingNumber,
-        currentStatus: '',
-        history: [],
-        officialUrl: entry.url,
-        sourceUrl: 'https://developer.dhl.com/api-reference/shipment-tracking',
-        error: 'У DHL официальное получение истории в API требует subscription key. Без ключа даю прямую ссылку на официальный трекинг.'
-      };
-    }
-
-    if (entry.carrier === 'ups') {
-      return {
-        success: false,
-        carrier: entry.carrier,
-        trackingNumber: entry.trackingNumber,
-        currentStatus: '',
-        history: [],
-        officialUrl: entry.url,
-        sourceUrl: 'https://developer.ups.com/us/en/business-solutions/expand-your-online-business/upgrade-digital-technology/developer-resource-center',
-        error: 'Для UPS без отдельной developer-интеграции надёжнее открывать официальный трекинг. В панели оставляю прямую ссылку.'
-      };
-    }
-
-    return {
-      success: false,
-      carrier: entry.carrier,
-      trackingNumber: entry.trackingNumber,
-      currentStatus: '',
-      history: [],
-      officialUrl: entry.url,
-      sourceUrl: '',
-      error: 'Не удалось определить службу доставки для этого номера.'
-    };
   }
 
   function buildRequestUrl(action, orderId, settings, options) {
@@ -1248,7 +501,6 @@
     error: '#dc2626'
   };
   var PLACEMENT_CONFIRMED_BORDER_COLOR = '#9664bf';
-  var TRACKING_BUTTON_BORDER_COLOR = '#0f766e';
 
   function applyFloatingButtonStyles(button, options) {
     var styleOptions = options || {};
@@ -1317,27 +569,6 @@
     return button;
   }
 
-  function createTrackingButton() {
-    var button = document.getElementById(APP_CONFIG.TRACKING_BUTTON_ID);
-    if (button) {
-      return button;
-    }
-
-    button = document.createElement('button');
-    button.id = APP_CONFIG.TRACKING_BUTTON_ID;
-    button.textContent = 'Проверить трекинг';
-    button.style.display = 'none';
-    applyFloatingButtonStyles(button, {
-      right: '150px',
-      top: APP_CONFIG.TRACKING_BUTTON_TOP,
-      background: '#0f766e'
-    });
-    button.addEventListener('click', onTrackingButtonClick);
-    document.body.appendChild(button);
-
-    return button;
-  }
-
   function getPlacementButtonBorderColor() {
     return createPlacementButton().style.display === 'none'
       ? 'transparent'
@@ -1347,8 +578,6 @@
   function resetActionButtonBorders() {
     createSearchButton().style.borderColor = 'transparent';
     createPlacementButton().style.borderColor = getPlacementButtonBorderColor();
-    createTrackingButton().style.borderColor =
-      createTrackingButton().style.display === 'none' ? 'transparent' : TRACKING_BUTTON_BORDER_COLOR;
   }
 
   function setStatus(text, mode, buttonKey, options) {
@@ -1358,8 +587,6 @@
 
     if (buttonKey === 'placement') {
       targetButton = createPlacementButton();
-    } else if (buttonKey === 'tracking') {
-      targetButton = createTrackingButton();
     } else {
       targetButton = createSearchButton();
     }
@@ -1477,13 +704,6 @@
 
     button.style.display = isVisible ? 'block' : 'none';
     button.style.borderColor = isVisible ? PLACEMENT_CONFIRMED_BORDER_COLOR : 'transparent';
-  }
-
-  function setTrackingButtonVisible(isVisible) {
-    var button = createTrackingButton();
-
-    button.style.display = isVisible ? 'block' : 'none';
-    button.style.borderColor = isVisible ? TRACKING_BUTTON_BORDER_COLOR : 'transparent';
   }
 
   function renderError(title, detailsHtml, panelTitle) {
@@ -1944,117 +1164,6 @@
     }
   }
 
-  function renderTrackingPanel(data) {
-    var entries = data && Array.isArray(data.entries) ? data.entries : [];
-    var sourceLabel = normalizeWhitespace(data && data.sourceLabel) || 'Трекинг номер';
-    var html = '';
-
-    html += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:14px;background:#f9fafb;">';
-    html += '<div style="margin-bottom:6px;"><b>Поле заказа:</b> ' + escapeHtml(sourceLabel) + '</div>';
-    html += '<div style="margin-bottom:6px;"><b>Значение:</b> ' + escapeHtml(data && data.rawFieldValue ? data.rawFieldValue : '') + '</div>';
-    html += '<div style="margin-bottom:0;"><b>Распознано треков:</b> ' + escapeHtml(String(entries.length)) + '</div>';
-    html += '</div>';
-
-    if (!entries.length) {
-      html += '<div style="padding:12px;border:1px solid #fecaca;border-radius:10px;background:#fef2f2;color:#991b1b;">Не удалось распознать трек-номер из поля заказа <b>' + escapeHtml(sourceLabel) + '</b>.</div>';
-      setPanelHtml(html, 'Трекинг поставки', 'tracking');
-      return;
-    }
-
-    entries.forEach(function (entry, index) {
-      var history = Array.isArray(entry.history) ? entry.history : [];
-      var statusColor = entry.success ? '#166534' : '#92400e';
-
-      html += '<section style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff;">';
-      html += '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:8px;">';
-      html += '<div>';
-      html += '<div style="font-weight:bold;font-size:15px;margin-bottom:4px;">' + escapeHtml(entry.trackingNumber || '') + '</div>';
-      html += '<div style="font-size:12px;color:#666;">' + escapeHtml(entry.carrierLabel || '') + '</div>';
-      html += '</div>';
-      html += '<div style="font-size:12px;color:' + statusColor + ';font-weight:bold;text-align:right;">' + escapeHtml(
-        entry.success
-          ? (entry.delivered ? 'Доставлено' : 'Статус загружен')
-          : 'Официальный fallback'
-      ) + '</div>';
-      html += '</div>';
-
-      if (entry.currentStatus) {
-        html += '<div style="margin-bottom:8px;"><b>Текущий статус:</b> <span style="color:' + statusColor + ';">' + escapeHtml(entry.currentStatus) + '</span></div>';
-      }
-
-      if (entry.success && entry.carrier === 'schenker') {
-        html += '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;font-size:12px;color:#374151;">';
-        html += '<div><b>До склада:</b> ' + escapeHtml(entry.delivered ? 'Да' : 'Еще в пути') + '</div>';
-
-        if (entry.deliveredAt) {
-          html += '<div><b>Дата доставки:</b> ' + escapeHtml(formatTrackingEventDate(entry.deliveredAt)) + '</div>';
-        } else if (entry.estimatedDeliveryAt) {
-          html += '<div><b>Плановая доставка:</b> ' + escapeHtml(formatTrackingEventDate(entry.estimatedDeliveryAt)) + '</div>';
-        }
-
-        if (entry.progressStepLabel) {
-          html += '<div><b>Этап:</b> ' + escapeHtml(entry.progressStepLabel) + '</div>';
-        }
-
-        if (entry.originCity || entry.destinationCity) {
-          html += '<div><b>Маршрут:</b> ' + escapeHtml((entry.originCity || 'Неизвестно') + ' -> ' + (entry.destinationCity || 'Неизвестно')) + '</div>';
-        }
-
-        if (entry.receivingOfficeCity) {
-          html += '<div><b>Принимающий терминал:</b> ' + escapeHtml(entry.receivingOfficeCity) + '</div>';
-        }
-
-        html += '</div>';
-      }
-
-      if (entry.error) {
-        html += '<div style="margin-bottom:8px;font-size:12px;color:#7c2d12;">' + escapeHtml(entry.error) + '</div>';
-      }
-
-      if (history.length) {
-        html += '<div style="font-weight:bold;margin:10px 0 8px 0;">История</div>';
-        html += '<div style="display:flex;flex-direction:column;gap:8px;">';
-
-        history.forEach(function (event) {
-          html += '<div style="border-left:3px solid #99f6e4;padding-left:10px;">';
-          html += '<div style="font-size:12px;color:#666;margin-bottom:2px;">' + escapeHtml(formatTrackingEventDate(event.date)) + '</div>';
-          html += '<div style="font-size:13px;font-weight:bold;color:#134e4a;margin-bottom:' + (event.description || event.location ? '2px' : '0') + ';">' + escapeHtml(event.title || 'Событие') + '</div>';
-
-          if (event.description) {
-            html += '<div style="font-size:12px;color:#444;margin-bottom:' + (event.location ? '2px' : '0') + ';">' + escapeHtml(event.description) + '</div>';
-          }
-
-          if (event.location) {
-            html += '<div style="font-size:12px;color:#666;">' + escapeHtml(event.location) + '</div>';
-          }
-
-          html += '</div>';
-        });
-
-        html += '</div>';
-      }
-
-      html += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;">';
-
-      if (entry.officialUrl) {
-        html += '<a href="' + escapeHtml(entry.officialUrl) + '" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;padding:8px 12px;border-radius:8px;background:#0f766e;color:#fff;text-decoration:none;font-weight:bold;">Открыть официальный трекинг</a>';
-      }
-
-      if (entry.sourceUrl && entry.sourceUrl !== entry.officialUrl) {
-        html += '<a href="' + escapeHtml(entry.sourceUrl) + '" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#0f766e;text-decoration:none;font-weight:bold;">Источник интеграции</a>';
-      }
-
-      html += '</div>';
-      html += '</section>';
-    });
-
-    if (data && data.showSupportNote) {
-      html += '<div style="padding:12px;border:1px solid #bfdbfe;border-radius:10px;background:#eff6ff;color:#1d4ed8;font-size:12px;">UPS и DHL в этой версии работают через официальный fallback, потому что их стабильное API-получение статуса обычно требует отдельную developer-подписку или ключ.</div>';
-    }
-
-    setPanelHtml(html, 'Трекинг поставки', 'tracking');
-  }
-
   function resetOrderState(orderId) {
     state.currentOrderId = orderId;
     state.searchPrefetchPromise = null;
@@ -2069,13 +1178,6 @@
     state.placementDraftId = '';
     state.placementEmailSent = false;
     state.placementStateNeedsRetry = false;
-    state.trackingFieldValue = '';
-    state.trackingSourceType = '';
-    state.trackingSourceLabel = '';
-    state.trackingSourceId = '';
-    state.trackingSourceHref = '';
-    state.trackingEntries = [];
-    state.trackingLastResult = null;
   }
 
   function setPlacementMessage(selector, html, color) {
@@ -2324,16 +1426,6 @@
     setPlacementButtonVisible(Boolean(result && result.ok && result.data && result.data.success && result.data.canPlace));
   }
 
-  function syncTrackingButtonVisibility() {
-    if (!isPurchaseOrderPage()) {
-      setTrackingButtonVisible(false);
-      return [];
-    }
-
-    setTrackingButtonVisible(Boolean(getCurrentTrackingEntries().length));
-    return state.trackingEntries.slice();
-  }
-
   function syncSavedSupplierEmailsState(resultData) {
     var savedEmails = Array.isArray(resultData && resultData.emails) ? resultData.emails.slice() : [];
 
@@ -2363,7 +1455,6 @@
         state.placementMetaResult = result;
         state.placementMetaError = null;
         syncPlacementButtonWithResult(orderId, result);
-        syncTrackingButtonVisibility();
         return result;
       })
       .catch(function (error) {
@@ -2371,7 +1462,6 @@
           state.placementMetaError = error;
           state.placementMetaResult = null;
           setPlacementButtonVisible(false);
-          setTrackingButtonVisible(false);
         }
 
         throw error;
@@ -2964,47 +2054,6 @@
     }
   }
 
-  async function onTrackingButtonClick() {
-    var entries = syncTrackingButtonVisibility();
-    var results = [];
-    var index;
-    var showSupportNote = false;
-
-    if (!entries.length) {
-      renderTrackingPanel({
-        rawFieldValue: state.trackingFieldValue,
-        sourceLabel: state.trackingSourceLabel,
-        entries: []
-      });
-      setStatus('Трекинг не найден', 'error', 'tracking');
-      return;
-    }
-
-    setPanelHtml('<div>Проверяю трекинг по официальным сервисам...</div>', 'Трекинг поставки', 'tracking');
-    setStatus('Проверяю трекинг...', 'loading', 'tracking');
-
-    for (index = 0; index < entries.length; index += 1) {
-      results.push(Object.assign({}, entries[index], await fetchTrackingDetails(entries[index])));
-
-      if (entries[index].carrier === 'ups' || entries[index].carrier === 'dhl') {
-        showSupportNote = true;
-      }
-    }
-
-    state.trackingLastResult = results.slice();
-    renderTrackingPanel({
-      rawFieldValue: state.trackingFieldValue,
-      sourceLabel: state.trackingSourceLabel,
-      entries: results,
-      showSupportNote: showSupportNote
-    });
-    setStatus(
-      results.some(function (item) { return item && item.success; }) ? 'Трекинг загружен' : 'Открыт fallback по ссылкам',
-      results.some(function (item) { return item && item.success; }) ? 'ok' : 'error',
-      'tracking'
-    );
-  }
-
   async function onPlacementDownloadClick() {
     var orderId = getOrderIdFromUrl();
     var settings = ensureUserSettings();
@@ -3425,7 +2474,6 @@
     var settings;
 
     createPlacementButton();
-    createTrackingButton();
 
     if (isPurchaseOrderPage()) {
       searchButton.style.display = 'block';
@@ -3438,7 +2486,6 @@
       settings = ensureUserSettings({ silent: true });
       if (!settings) {
         setPlacementButtonVisible(false);
-        syncTrackingButtonVisibility();
         setStatus('Нужно заполнить настройки', 'error', 'search');
         return;
       }
@@ -3446,10 +2493,8 @@
       if (orderId) {
         startBackgroundPrefetch(orderId);
         startPlacementMetaPrefetch(orderId);
-        syncTrackingButtonVisibility();
       } else {
         setPlacementButtonVisible(false);
-        setTrackingButtonVisible(false);
       }
 
       return;
@@ -3457,7 +2502,6 @@
 
     searchButton.style.display = 'none';
     setPlacementButtonVisible(false);
-    setTrackingButtonVisible(false);
     hidePanel();
     setStatus('');
     resetOrderState(null);
@@ -3466,7 +2510,6 @@
   function init() {
     createSearchButton();
     createPlacementButton();
-    createTrackingButton();
     createPanel();
     registerMenuCommands();
     updateVisibilityAndPrefetch();
@@ -3478,10 +2521,6 @@
         lastHash = window.location.hash;
         updateVisibilityAndPrefetch();
         return;
-      }
-
-      if (isPurchaseOrderPage()) {
-        syncTrackingButtonVisibility();
       }
     }, APP_CONFIG.POLL_INTERVAL_MS);
 
@@ -3497,9 +2536,7 @@
     }, APP_CONFIG.SECONDARY_PREFETCH_DELAY_MS);
   }
 
-  if (isSchenkerTrackingPage()) {
-    startSchenkerTrackingHelperMode();
-  } else if (document.readyState === 'loading') {
+  if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
