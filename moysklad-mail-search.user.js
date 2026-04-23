@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.17
+// @version      0.1.18
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -293,17 +293,17 @@
   }
 
   function buildPlacementEmailSubject(data) {
-    return 'Purchase Order ' + String((data && data.orderNumber) || '').trim();
+    return 'NEW ORDER PO ' + String((data && data.orderNumber) || '').trim();
   }
 
   function buildPlacementEmailBody(data) {
     var orderNumber = String((data && data.orderNumber) || '').trim();
-    var supplierName = String((data && data.supplierName) || '').trim();
 
     return [
-      'Hello' + (supplierName ? ' ' + supplierName : '') + ',',
+      'Hello,',
       '',
-      'Please find attached purchase order ' + orderNumber + '.',
+      'Please find attached our new order PO ' + orderNumber + '.',
+      'Could you please confirm the expected ready date and send us the order confirmation or proforma invoice?',
       '',
       'Best regards'
     ].join('\n');
@@ -1805,10 +1805,10 @@
     var subject = buildPlacementEmailSubject(data);
     var body = buildPlacementEmailBody(data);
     var attachmentFileName = String((data && data.attachmentFileName) || 'PO.xls');
-    var statusButtonDisabled = !state.placementEmailSent;
     var sendButtonDisabled = state.placementEmailSent;
     var draftButtonDisabled = state.placementEmailSent;
     var draftButtonLabel = state.placementDraftId ? 'Обновить черновик' : 'Сохранить черновик';
+    var retryStateButtonVisible = Boolean(state.placementStateNeedsRetry);
     var useGmailSuggestions = Boolean(data && data.useGmailSuggestions);
     var gmailSuggestedEmails = data && Array.isArray(data.gmailSuggestedEmails)
       ? data.gmailSuggestedEmails
@@ -1911,19 +1911,19 @@
 
     html += '<section style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fff;">';
     html += '<div style="font-weight:bold;margin-bottom:8px;">3. Отправить или сохранить черновик</div>';
-    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;">Письмо уйдет через Apps Script от имени того Gmail-аккаунта, под которым сейчас работает этот скрипт. Вместо отправки можно сначала сохранить полноценный черновик в Gmail.</div>';
+    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;">Письмо уйдет через Apps Script от имени того Gmail-аккаунта, под которым сейчас работает этот скрипт. После отправки статус заказа автоматически сменится на "Размещен". Вместо отправки можно сначала сохранить полноценный черновик в Gmail.</div>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
     html += '<button id="tm-ms-placement-send-btn" type="button" ' + (sendButtonDisabled ? 'disabled ' : '') + 'style="padding:9px 12px;border:none;border-radius:8px;background:#15803d;color:#fff;cursor:' + (sendButtonDisabled ? 'default' : 'pointer') + ';font-weight:bold;opacity:' + (sendButtonDisabled ? '0.7' : '1') + ';">' + (sendButtonDisabled ? 'Письмо отправлено' : 'Отправить письмо') + '</button>';
     html += '<button id="tm-ms-placement-draft-btn" type="button" ' + (draftButtonDisabled ? 'disabled ' : '') + 'style="padding:9px 12px;border:1px solid #1d4ed8;border-radius:8px;background:#eff6ff;color:#1d4ed8;cursor:' + (draftButtonDisabled ? 'default' : 'pointer') + ';font-weight:bold;opacity:' + (draftButtonDisabled ? '0.7' : '1') + ';">' + escapeHtml(draftButtonLabel) + '</button>';
+    html += '<button id="tm-ms-placement-retry-state-btn" type="button" style="display:' + (retryStateButtonVisible ? 'inline-block' : 'none') + ';padding:9px 12px;border:none;border-radius:8px;background:#b45309;color:#fff;cursor:pointer;font-weight:bold;">Повторить смену статуса</button>';
     html += '</div>';
-    html += '<div id="tm-ms-placement-send-note" style="margin-top:10px;font-size:12px;color:#555;">' + escapeHtml(sendButtonDisabled ? 'Письмо уже отправлено в этой сессии. Можно подтверждать статус.' : 'Проверь получателей, тему, текст и вложение перед отправкой или сохранением черновика.') + '</div>';
-    html += '</section>';
-
-    html += '<section style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fff;">';
-    html += '<div style="font-weight:bold;margin-bottom:8px;">4. Подтвердить размещение</div>';
-    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;">Статус меняется отдельным кликом уже после успешной отправки письма.</div>';
-    html += '<button id="tm-ms-placement-state-btn" type="button" ' + (statusButtonDisabled ? 'disabled ' : '') + 'style="padding:9px 12px;border:none;border-radius:8px;background:#b45309;color:#fff;cursor:' + (statusButtonDisabled ? 'default' : 'pointer') + ';font-weight:bold;opacity:' + (statusButtonDisabled ? '0.7' : '1') + ';">Поставить статус "Размещен"</button>';
-    html += '<div id="tm-ms-placement-state-note" style="margin-top:10px;font-size:12px;color:#555;">' + escapeHtml(statusButtonDisabled ? 'Кнопка станет активной после успешной отправки письма.' : 'Письмо отправлено, можно ставить статус.') + '</div>';
+    html += '<div id="tm-ms-placement-send-note" style="margin-top:10px;font-size:12px;color:#555;">' + escapeHtml(
+      sendButtonDisabled
+        ? (retryStateButtonVisible
+          ? 'Письмо уже отправлено в этой сессии, но статус не обновился автоматически. Можно повторить только смену статуса.'
+          : 'Письмо уже отправлено в этой сессии, статус обновлен автоматически.')
+        : 'Проверь получателей, тему, текст и вложение перед отправкой или сохранением черновика.'
+    ) + '</div>';
     html += '</section>';
 
     html += '</div>';
@@ -1933,7 +1933,7 @@
     getPanelBody().querySelector('#tm-ms-placement-download-btn').addEventListener('click', onPlacementDownloadClick);
     getPanelBody().querySelector('#tm-ms-placement-send-btn').addEventListener('click', onPlacementSendEmailClick);
     getPanelBody().querySelector('#tm-ms-placement-draft-btn').addEventListener('click', onPlacementSaveDraftClick);
-    getPanelBody().querySelector('#tm-ms-placement-state-btn').addEventListener('click', onPlacementSetStateClick);
+    getPanelBody().querySelector('#tm-ms-placement-retry-state-btn').addEventListener('click', onPlacementRetryStateClick);
 
     if (useGmailSuggestions) {
       getPanelBody().querySelectorAll('.tm-ms-placement-suggested-email-btn').forEach(function (button) {
@@ -2068,6 +2068,7 @@
     state.lastPlacementDownloadUrl = '';
     state.placementDraftId = '';
     state.placementEmailSent = false;
+    state.placementStateNeedsRetry = false;
     state.trackingFieldValue = '';
     state.trackingSourceType = '';
     state.trackingSourceLabel = '';
@@ -2125,8 +2126,8 @@
     });
   }
 
-  function setPlacementStateButtonState(disabled, label) {
-    var button = getPanelBody().querySelector('#tm-ms-placement-state-btn');
+  function setPlacementRetryStateButtonState(disabled, label) {
+    var button = getPanelBody().querySelector('#tm-ms-placement-retry-state-btn');
 
     if (!button) {
       return;
@@ -2139,6 +2140,16 @@
     if (label) {
       button.textContent = label;
     }
+  }
+
+  function setPlacementRetryStateButtonVisible(visible) {
+    var button = getPanelBody().querySelector('#tm-ms-placement-retry-state-btn');
+
+    if (!button) {
+      return;
+    }
+
+    button.style.display = visible ? 'inline-block' : 'none';
   }
 
   function setPlacementSendButtonState(disabled, label) {
@@ -2256,6 +2267,53 @@
     if (valueNode) {
       valueNode.textContent = text || '';
     }
+  }
+
+  async function updatePlacementStateAfterSend(orderId, settings) {
+    var result;
+    var cachedData = state.placementMetaResult && state.placementMetaResult.data ? state.placementMetaResult.data : null;
+
+    setPlacementRetryStateButtonVisible(false);
+    state.placementStateNeedsRetry = false;
+
+    result = await fetchPlacementSetState(orderId, settings);
+
+    if (!result.ok) {
+      return {
+        success: false,
+        error: 'Не удалось изменить статус заказа.',
+        response: result
+      };
+    }
+
+    if (!result.data || !result.data.success) {
+      return {
+        success: false,
+        error: (result.data && result.data.error) || 'Не удалось изменить статус заказа.',
+        response: result
+      };
+    }
+
+    state.placementMetaResult = {
+      ok: true,
+      status: result.status,
+      requestUrl: result.requestUrl,
+      text: result.text,
+      data: Object.assign({}, cachedData || {}, {
+        success: true,
+        currentStateName: result.data.stateName,
+        currentStateHref: result.data.stateHref,
+        canPlace: false
+      })
+    };
+
+    setPlacementButtonVisible(false);
+    updatePlacementStateValue(result.data.stateName || 'Размещен');
+
+    return {
+      success: true,
+      data: result.data
+    };
   }
 
   function syncPlacementButtonWithResult(orderId, result) {
@@ -3016,6 +3074,8 @@
     var recipients;
     var orderId = getOrderIdFromUrl();
     var result;
+    var stateUpdateResult;
+    var attachmentFileName;
 
     if (!orderId || !settings) {
       renderSettingsRequired('размещения PO');
@@ -3072,20 +3132,42 @@
       }
 
       state.placementEmailSent = true;
+      state.placementStateNeedsRetry = false;
+      attachmentFileName = result.data.attachmentFileName || '';
       setPlacementSendButtonState(true, 'Письмо отправлено');
       setPlacementDraftButtonState(true, 'Черновик не нужен');
-      setPlacementStateButtonState(false, 'Поставить статус "Размещен"');
       setPlacementMessage(
         '#tm-ms-placement-send-note',
-        'Письмо отправлено. Вложение: ' + escapeHtml(result.data.attachmentFileName || ''),
-        '#166534'
+        'Письмо отправлено. Обновляю статус заказа в MoySklad...',
+        '#92400e'
       );
+      setPlacementRetryStateButtonVisible(false);
+      setStatus('Письмо отправлено, обновляю статус...', 'loading', 'placement');
+
+      stateUpdateResult = await updatePlacementStateAfterSend(orderId, settings);
+
+      if (!stateUpdateResult.success) {
+        state.placementStateNeedsRetry = true;
+        setPlacementRetryStateButtonVisible(true);
+        setPlacementRetryStateButtonState(false, 'Повторить смену статуса');
+        setPlacementMessage(
+          '#tm-ms-placement-send-note',
+          'Письмо отправлено, но статус не обновился автоматически. ' +
+            escapeHtml(stateUpdateResult.error) +
+            (attachmentFileName ? ' Вложение: ' + escapeHtml(attachmentFileName) : ''),
+          '#b45309'
+        );
+        setStatus('Письмо отправлено, статус не обновлен', 'error', 'placement');
+        return;
+      }
+
       setPlacementMessage(
-        '#tm-ms-placement-state-note',
-        'Теперь можно подтвердить размещение и поставить статус "Размещен".',
+        '#tm-ms-placement-send-note',
+        'Письмо отправлено, статус обновлен на "Размещен".' +
+          (attachmentFileName ? ' Вложение: ' + escapeHtml(attachmentFileName) : ''),
         '#166534'
       );
-      setStatus('Письмо отправлено', 'ok', 'placement');
+      setStatus('Письмо отправлено и размещено', 'ok', 'placement');
     } catch (error) {
       setPlacementSendButtonState(false, 'Отправить письмо');
       setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
@@ -3165,14 +3247,11 @@
       setPlacementSendButtonState(false, 'Отправить письмо');
       setPlacementMessage(
         '#tm-ms-placement-send-note',
-        result.data.updatedExisting
-          ? 'Черновик обновлен в Gmail. Статус пока не менялся; после проверки можно отправить письмо отсюда или из папки Черновики.'
-          : 'Черновик сохранен в Gmail. Статус пока не менялся; после проверки можно отправить письмо отсюда или из папки Черновики.',
-        '#166534'
-      );
-      setPlacementMessage(
-        '#tm-ms-placement-state-note',
-        'Сохранение черновика не меняет статус. Для статуса нужно именно отправить письмо.',
+        (
+          result.data.updatedExisting
+            ? 'Черновик обновлен в Gmail.'
+            : 'Черновик сохранен в Gmail.'
+        ) + ' Статус пока не менялся; после проверки можно отправить письмо отсюда или из папки Черновики.',
         '#92400e'
       );
       setStatus('Черновик сохранен', 'ok', 'placement');
@@ -3278,11 +3357,10 @@
     }
   }
 
-  async function onPlacementSetStateClick() {
+  async function onPlacementRetryStateClick() {
     var orderId = getOrderIdFromUrl();
     var settings = ensureUserSettings();
     var result;
-    var cachedData = state.placementMetaResult && state.placementMetaResult.data ? state.placementMetaResult.data : null;
 
     if (!orderId || !settings) {
       renderSettingsRequired('размещения PO');
@@ -3290,73 +3368,50 @@
       return;
     }
 
-    if (!state.placementEmailSent) {
+    if (!state.placementEmailSent || !state.placementStateNeedsRetry) {
       setPlacementMessage(
-        '#tm-ms-placement-state-note',
-        'Сначала отправь письмо из этой панели, затем подтверждай статус.',
+        '#tm-ms-placement-send-note',
+        'Повторная смена статуса доступна только после отправки письма в этой панели.',
         '#991b1b'
       );
-      setStatus('Сначала отправь письмо', 'error', 'placement');
+      setStatus('Недоступно', 'error', 'placement');
       return;
     }
 
-    if (!window.confirm('Поставить статус "Размещен"? Проверь, что письмо уже отправлено из этой панели.')) {
-      return;
-    }
-
-    setPlacementStateButtonState(true, 'Меняю статус...');
-    setPlacementMessage('#tm-ms-placement-state-note', 'Обновляю статус заказа в MoySklad...', '#92400e');
+    setPlacementRetryStateButtonState(true, 'Меняю статус...');
+    setPlacementMessage('#tm-ms-placement-send-note', 'Повторно обновляю статус заказа в MoySklad...', '#92400e');
     setStatus('Меняю статус...', 'loading', 'placement');
 
     try {
-      result = await fetchPlacementSetState(orderId, settings);
+      result = await updatePlacementStateAfterSend(orderId, settings);
 
-      if (!result.ok) {
-        setPlacementStateButtonState(false, 'Поставить статус "Размещен"');
-        renderNonJsonResponse(result.text, result.requestUrl, result.status, 'Размещение PO');
-        setStatus('Смена статуса: ошибка', 'error', 'placement');
-        return;
-      }
-
-      if (!result.data || !result.data.success) {
-        setPlacementStateButtonState(false, 'Поставить статус "Размещен"');
+      if (!result.success) {
+        setPlacementRetryStateButtonVisible(true);
+        setPlacementRetryStateButtonState(false, 'Повторить смену статуса');
         setPlacementMessage(
-          '#tm-ms-placement-state-note',
-          escapeHtml((result.data && result.data.error) || 'Не удалось изменить статус'),
+          '#tm-ms-placement-send-note',
+          escapeHtml(result.error),
           '#991b1b'
         );
         setStatus('Смена статуса: ошибка', 'error', 'placement');
         return;
       }
 
-      state.placementMetaResult = {
-        ok: true,
-        status: result.status,
-        requestUrl: result.requestUrl,
-        text: result.text,
-        data: Object.assign({}, cachedData || {}, {
-          success: true,
-          currentStateName: result.data.stateName,
-          currentStateHref: result.data.stateHref,
-          canPlace: false
-        })
-      };
-
-      setPlacementButtonVisible(false);
-      updatePlacementStateValue(result.data.stateName || 'Размещен');
-      setPlacementStateButtonState(true, result.data.alreadyPlaced ? 'Статус уже установлен' : 'Статус установлен');
+      state.placementStateNeedsRetry = false;
+      setPlacementRetryStateButtonVisible(false);
       setPlacementMessage(
-        '#tm-ms-placement-state-note',
+        '#tm-ms-placement-send-note',
         result.data.alreadyPlaced
-          ? 'Заказ уже был в статусе "Размещен".'
-          : 'Статус обновлен. Кнопка "Размесить заказ" для этого заказа скрыта до следующего изменения состояния.',
+          ? 'Статус "Размещен" уже был установлен.'
+          : 'Статус обновлен на "Размещен".',
         '#166534'
       );
       setStatus('Статус обновлен', 'ok', 'placement');
     } catch (error) {
-      setPlacementStateButtonState(false, 'Поставить статус "Размещен"');
+      setPlacementRetryStateButtonVisible(true);
+      setPlacementRetryStateButtonState(false, 'Повторить смену статуса');
       setPlacementMessage(
-        '#tm-ms-placement-state-note',
+        '#tm-ms-placement-send-note',
         escapeHtml(error && error.message ? error.message : String(error)),
         '#991b1b'
       );
