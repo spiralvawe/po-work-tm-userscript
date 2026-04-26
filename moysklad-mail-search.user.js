@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.21
+// @version      0.1.22
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -497,6 +497,34 @@
       },
       body: JSON.stringify({
         action: 'placeUpdateOrganization',
+        token: settings.userToken,
+        id: orderId
+      })
+    });
+    var text = await response.text();
+    var trimmed = text.trim();
+    var isJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+
+    return {
+      ok: isJson,
+      status: response.status,
+      requestUrl: APP_CONFIG.GAS_URL,
+      text: text,
+      data: isJson ? JSON.parse(trimmed) : null
+    };
+  }
+
+  async function updatePlacementRouting(orderId, settings) {
+    var response = await fetch(APP_CONFIG.GAS_URL, {
+      method: 'POST',
+      redirect: 'follow',
+      credentials: 'omit',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: JSON.stringify({
+        action: 'placeUpdateRouting',
         token: settings.userToken,
         id: orderId
       })
@@ -1068,12 +1096,13 @@
   function renderPlacementOrganizationCheckLine(check) {
     var severity = String((check && check.severity) || '').trim().toLowerCase();
     var isOk = severity === 'ok' || String((check && check.status) || '') === 'ok';
-    var color = isOk ? '#166534' : '#92400e';
-    var background = isOk ? '#f0fdf4' : '#fffbeb';
-    var border = isOk ? '#bbf7d0' : '#fde68a';
-    var message = String((check && check.message) || 'Организация требует проверки').trim();
+    var isInfo = severity === 'info' || String((check && check.status) || '') === 'no_rule';
+    var color = isOk ? '#166534' : (isInfo ? '#374151' : '#92400e');
+    var background = isOk ? '#f0fdf4' : (isInfo ? '#f9fafb' : '#fffbeb');
+    var border = isOk ? '#bbf7d0' : (isInfo ? '#e5e7eb' : '#fde68a');
+    var message = String((check && check.message) || 'Маршрут требует проверки').trim();
 
-    return '<div id="tm-ms-placement-organization-check" style="margin-bottom:6px;padding:8px 10px;border:1px solid ' +
+    return '<div id="tm-ms-placement-routing-check" style="margin-bottom:6px;padding:8px 10px;border:1px solid ' +
       border +
       ';border-radius:8px;background:' +
       background +
@@ -1117,7 +1146,7 @@
     html += '<div style="margin-bottom:6px;"><b>Номер заказа:</b> ' + escapeHtml(data.orderNumber || '') + '</div>';
     html += '<div style="margin-bottom:6px;"><b>Поставщик:</b> ' + escapeHtml(data.supplierName || '') + '</div>';
     html += '<div style="margin-bottom:6px;"><b>Текущий статус:</b> <span id="tm-ms-placement-state-value">' + escapeHtml(data.currentStateName || '') + '</span></div>';
-    html += renderPlacementOrganizationCheckLine(data.organizationCheck);
+    html += renderPlacementOrganizationCheckLine(data.routingCheck || data.placementCheck || data.organizationCheck);
     html += '<div style="margin-bottom:0;"><b>Шаблон:</b> ' + escapeHtml(data.templateName || '') + ' (' + escapeHtml('xls') + ')</div>';
     html += '</div>';
 
@@ -1314,21 +1343,30 @@
   function getPlacementOrganizationModalCheck() {
     return state.placementMetaResult &&
       state.placementMetaResult.data &&
-      state.placementMetaResult.data.organizationCheck
-      ? state.placementMetaResult.data.organizationCheck
+      (state.placementMetaResult.data.routingCheck ||
+        state.placementMetaResult.data.placementCheck ||
+        state.placementMetaResult.data.organizationCheck)
+      ? (state.placementMetaResult.data.routingCheck ||
+        state.placementMetaResult.data.placementCheck ||
+        state.placementMetaResult.data.organizationCheck)
       : null;
   }
 
   function showPlacementOrganizationMismatchModal(check) {
-    var organizationCheck = check || getPlacementOrganizationModalCheck();
+    var routingCheck = check || getPlacementOrganizationModalCheck();
+    var organizationCheck = routingCheck && routingCheck.organizationCheck ? routingCheck.organizationCheck : routingCheck;
+    var warehouseCheck = routingCheck && routingCheck.warehouseCheck ? routingCheck.warehouseCheck : null;
     var currentOrganization = organizationCheck && organizationCheck.currentOrganization;
     var expectedOrganization = organizationCheck && organizationCheck.expectedOrganization;
-    var history = organizationCheck && Array.isArray(organizationCheck.history) ? organizationCheck.history : [];
-    var expectedLabel = String((expectedOrganization && expectedOrganization.label) || '').trim();
+    var currentWarehouse = warehouseCheck && warehouseCheck.currentWarehouse;
+    var expectedWarehouse = warehouseCheck && warehouseCheck.expectedWarehouse;
+    var rule = routingCheck && routingCheck.rule;
+    var expectedLabel = String((expectedOrganization && (expectedOrganization.name || expectedOrganization.label)) || '').trim();
+    var expectedWarehouseLabel = String((expectedWarehouse && (expectedWarehouse.name || expectedWarehouse.label)) || '').trim();
     var html = '';
     var modal;
 
-    if (!organizationCheck || organizationCheck.status !== 'mismatch' || !expectedLabel) {
+    if (!routingCheck || routingCheck.status !== 'mismatch' || (!expectedLabel && !expectedWarehouseLabel)) {
       return;
     }
 
@@ -1336,30 +1374,19 @@
 
     html += '<div id="tm-ms-placement-organization-modal" style="position:fixed;inset:0;z-index:2147483647;background:rgba(17,24,39,0.45);display:flex;align-items:center;justify-content:center;padding:16px;">';
     html += '<div style="width:min(520px,100%);max-height:88vh;overflow:auto;background:#fff;border-radius:10px;box-shadow:0 20px 60px rgba(15,23,42,0.35);border:1px solid #e5e7eb;">';
-    html += '<div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;font-weight:bold;color:#111827;">Проверить организацию заказа</div>';
+    html += '<div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;font-weight:bold;color:#111827;">Проверить маршрут заказа</div>';
     html += '<div style="padding:14px 16px;color:#374151;font-size:13px;line-height:1.45;">';
-    html += '<div style="padding:10px 12px;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;color:#92400e;margin-bottom:12px;font-weight:bold;">' + escapeHtml(organizationCheck.message || '') + '</div>';
+    html += '<div style="padding:10px 12px;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;color:#92400e;margin-bottom:12px;font-weight:bold;">' + escapeHtml(routingCheck.message || '') + '</div>';
     html += '<div style="margin-bottom:6px;"><b>Текущая организация:</b> ' + escapeHtml((currentOrganization && currentOrganization.name) || (currentOrganization && currentOrganization.label) || '') + '</div>';
-    html += '<div style="margin-bottom:12px;"><b>Ожидаемая организация:</b> ' + escapeHtml((expectedOrganization && expectedOrganization.name) || expectedLabel) + '</div>';
-    html += '<div style="font-weight:bold;margin-bottom:6px;">Последние accepted PO</div>';
-
-    if (history.length) {
-      html += '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin-bottom:12px;">';
-      history.forEach(function (item) {
-        html += '<div style="display:flex;gap:8px;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #f3f4f6;">';
-        html += '<span style="font-weight:bold;color:#111827;">' + escapeHtml(item.orderNumber || item.orderId || '') + '</span>';
-        html += '<span style="color:#4b5563;text-align:right;">' + escapeHtml(item.organizationName || item.organizationLabel || 'Unknown') + '</span>';
-        html += '</div>';
-      });
-      html += '</div>';
-    } else {
-      html += '<div style="color:#6b7280;margin-bottom:12px;">История accepted PO не найдена.</div>';
-    }
+    html += '<div style="margin-bottom:6px;"><b>Ожидаемая организация:</b> ' + escapeHtml((expectedOrganization && expectedOrganization.name) || expectedLabel) + '</div>';
+    html += '<div style="margin-bottom:6px;"><b>Текущий склад:</b> ' + escapeHtml((currentWarehouse && currentWarehouse.name) || '') + '</div>';
+    html += '<div style="margin-bottom:6px;"><b>Ожидаемый склад:</b> ' + escapeHtml((expectedWarehouse && expectedWarehouse.name) || expectedWarehouseLabel) + '</div>';
+    html += '<div style="margin-bottom:12px;"><b>Правило:</b> ' + escapeHtml((rule && rule.supplierName) || '') + ' / ' + escapeHtml(routingCheck.ruleSource || 'placement_rules') + '</div>';
 
     html += '<div id="tm-ms-placement-organization-modal-note" style="font-size:12px;color:#6b7280;margin-bottom:12px;"></div>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;">';
     html += '<button id="tm-ms-placement-organization-keep-btn" type="button" style="padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#374151;cursor:pointer;font-weight:bold;">Оставить как есть</button>';
-    html += '<button id="tm-ms-placement-organization-update-btn" type="button" style="padding:9px 12px;border:none;border-radius:8px;background:#b45309;color:#fff;cursor:pointer;font-weight:bold;">Заменить на ' + escapeHtml(expectedLabel) + '</button>';
+    html += '<button id="tm-ms-placement-organization-update-btn" type="button" style="padding:9px 12px;border:none;border-radius:8px;background:#b45309;color:#fff;cursor:pointer;font-weight:bold;">Исправить маршрут</button>';
     html += '</div>';
     html += '</div>';
     html += '</div>';
@@ -1416,16 +1443,16 @@
     }
 
     setPlacementOrganizationUpdateButtonState(true, 'Обновляю...');
-    setPlacementOrganizationModalNote('Обновляю организацию в МойСклад...', '#92400e');
-    setStatus('Обновляю организацию...', 'loading', 'placement');
+    setPlacementOrganizationModalNote('Обновляю маршрут в МойСклад...', '#92400e');
+    setStatus('Обновляю маршрут...', 'loading', 'placement');
 
     try {
-      result = await updatePlacementOrganization(orderId, settings);
+      result = await updatePlacementRouting(orderId, settings);
 
       if (!result.ok) {
         setPlacementOrganizationModalNote(escapeHtml(result.text || 'Apps Script вернул не JSON.'), '#991b1b');
-        setPlacementOrganizationUpdateButtonState(false, 'Повторить замену');
-        setStatus('Организация: ошибка', 'error', 'placement');
+        setPlacementOrganizationUpdateButtonState(false, 'Повторить исправление');
+        setStatus('Маршрут: ошибка', 'error', 'placement');
         return;
       }
 
@@ -1434,21 +1461,21 @@
           escapeHtml((result.data && result.data.error) || 'Не удалось обновить организацию.'),
           '#991b1b'
         );
-        setPlacementOrganizationUpdateButtonState(false, 'Повторить замену');
-        setStatus('Организация: ошибка', 'error', 'placement');
+        setPlacementOrganizationUpdateButtonState(false, 'Повторить исправление');
+        setStatus('Маршрут: ошибка', 'error', 'placement');
         return;
       }
 
-      setPlacementOrganizationModalNote('Организация обновлена. Страница будет перезагружена.', '#166534');
-      setStatus('Организация обновлена', 'ok', 'placement');
+      setPlacementOrganizationModalNote('Маршрут обновлен. Страница будет перезагружена.', '#166534');
+      setStatus('Маршрут обновлен', 'ok', 'placement');
 
       window.setTimeout(function () {
         window.location.reload();
       }, 1200);
     } catch (error) {
       setPlacementOrganizationModalNote(escapeHtml(error && error.message ? error.message : String(error)), '#991b1b');
-      setPlacementOrganizationUpdateButtonState(false, 'Повторить замену');
-      setStatus('Организация: ошибка', 'error', 'placement');
+      setPlacementOrganizationUpdateButtonState(false, 'Повторить исправление');
+      setStatus('Маршрут: ошибка', 'error', 'placement');
     }
   }
 
@@ -2289,12 +2316,12 @@
       renderPlacementPanel(panelData);
       if (
         panelData &&
-        panelData.organizationCheck &&
-        panelData.organizationCheck.status === 'mismatch' &&
+        (panelData.routingCheck || panelData.placementCheck || panelData.organizationCheck) &&
+        (panelData.routingCheck || panelData.placementCheck || panelData.organizationCheck).status === 'mismatch' &&
         !state.placementOrganizationModalShown
       ) {
         state.placementOrganizationModalShown = true;
-        showPlacementOrganizationMismatchModal(panelData.organizationCheck);
+        showPlacementOrganizationMismatchModal(panelData.routingCheck || panelData.placementCheck || panelData.organizationCheck);
       }
       setStatus('', result.data && result.data.success && result.data.canPlace ? 'ok' : 'error', 'placement');
     } catch (error) {
