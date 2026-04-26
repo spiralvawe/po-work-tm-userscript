@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.22
+// @version      0.1.23
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -2269,7 +2269,6 @@
     var orderId = getOrderIdFromUrl();
     var settings;
     var result;
-    var hasPlacementPrefetch;
 
     if (!orderId) {
       renderError('Ошибка', '<div>Не удалось определить ID заказа из URL</div>', 'Размещение PO');
@@ -2285,14 +2284,8 @@
 
     state.placementOrganizationModalShown = false;
 
-    hasPlacementPrefetch =
-      state.currentOrderId === orderId &&
-      Boolean(state.placementMetaResult || state.placementMetaPromise);
-
-    if (!hasPlacementPrefetch) {
-      setPanelHtml('<div>Загружаю данные размещения...</div>', 'Размещение PO', 'placement');
-      setStatus('Загружаю размещение...', 'loading', 'placement');
-    }
+    setPanelHtml('<div>Загружаю данные размещения...</div>', 'Размещение PO', 'placement');
+    setStatus('Загружаю размещение...', 'loading', 'placement');
 
     try {
       result = await loadPlacementMeta(orderId, settings);
