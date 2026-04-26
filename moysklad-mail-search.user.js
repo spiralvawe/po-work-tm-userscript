@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.19
+// @version      0.1.20
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -47,6 +47,7 @@
     placementMetaError: null,
     lastPlacementDownloadUrl: '',
     placementDraftId: '',
+    placementFromAddress: '',
     placementEmailSent: false,
     isPanelOpen: false,
     activePanelMode: 'search'
@@ -291,6 +292,23 @@
     ].join('\n');
   }
 
+  function getDefaultPlacementFromAddress(data) {
+    var senders = data && Array.isArray(data.emailSenders) ? data.emailSenders : [];
+    var explicitDefault = String((data && data.defaultFromAddress) || '').trim().toLowerCase();
+    var selected = explicitDefault || '';
+
+    senders.some(function (sender) {
+      if (sender && sender.isDefault && sender.address) {
+        selected = String(sender.address).trim().toLowerCase();
+        return true;
+      }
+
+      return false;
+    });
+
+    return selected || (senders[0] && senders[0].address ? String(senders[0].address).trim().toLowerCase() : '');
+  }
+
   function isPurchaseOrderPage() {
     var hash = window.location.hash || '';
     return hash.startsWith('#purchaseorder/edit');
@@ -383,6 +401,7 @@
         token: settings.userToken,
         id: orderId,
         to: payload.to,
+        from: payload.from,
         subject: payload.subject,
         body: payload.body
       })
@@ -415,6 +434,7 @@
         id: orderId,
         draftId: payload.draftId,
         to: payload.to,
+        from: payload.from,
         subject: payload.subject,
         body: payload.body
       })
@@ -1025,6 +1045,8 @@
     var subject = buildPlacementEmailSubject(data);
     var body = buildPlacementEmailBody(data);
     var attachmentFileName = String((data && data.attachmentFileName) || 'PO.xls');
+    var emailSenders = data && Array.isArray(data.emailSenders) ? data.emailSenders : [];
+    var selectedFromAddress = state.placementFromAddress || getDefaultPlacementFromAddress(data);
     var sendButtonDisabled = state.placementEmailSent;
     var draftButtonDisabled = state.placementEmailSent;
     var draftButtonLabel = state.placementDraftId ? 'Обновить черновик' : 'Сохранить черновик';
@@ -1068,6 +1090,24 @@
 
     html += '<section style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fff;">';
     html += '<div style="font-weight:bold;margin-bottom:8px;">2. Подготовить письмо</div>';
+
+    if (emailSenders.length) {
+      html += '<label style="display:block;font-size:12px;font-weight:bold;color:#555;margin-bottom:6px;">От кого</label>';
+      html += '<select id="tm-ms-placement-from" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font:inherit;margin-bottom:10px;background:#fff;">';
+
+      emailSenders.forEach(function (sender) {
+        var address = String((sender && sender.address) || '').trim().toLowerCase();
+        var label = String((sender && sender.label) || address);
+        var canUseAsFrom = sender && sender.canUseAsFrom !== false;
+        var selected = address && address === selectedFromAddress ? ' selected' : '';
+        var disabled = canUseAsFrom ? '' : ' disabled';
+        var optionLabel = label + ' <' + address + '>' + (canUseAsFrom ? '' : ' - недоступен');
+
+        html += '<option value="' + escapeHtml(address) + '"' + selected + disabled + '>' + escapeHtml(optionLabel) + '</option>';
+      });
+
+      html += '</select>';
+    }
 
     if (useGmailSuggestions) {
       html += '<div style="border:1px solid #fdba74;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff7ed;">';
@@ -1131,7 +1171,7 @@
 
     html += '<section style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#fff;">';
     html += '<div style="font-weight:bold;margin-bottom:8px;">3. Отправить или сохранить черновик</div>';
-    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;">Письмо уйдет через Apps Script от имени того Gmail-аккаунта, под которым сейчас работает этот скрипт. После отправки статус заказа автоматически сменится на "Размещен". Вместо отправки можно сначала сохранить полноценный черновик в Gmail.</div>';
+    html += '<div style="font-size:12px;color:#666;margin-bottom:10px;">После отправки статус заказа автоматически сменится на "Размещен". Вместо отправки можно сначала сохранить полноценный черновик в Gmail.</div>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
     html += '<button id="tm-ms-placement-send-btn" type="button" ' + (sendButtonDisabled ? 'disabled ' : '') + 'style="padding:9px 12px;border:none;border-radius:8px;background:#15803d;color:#fff;cursor:' + (sendButtonDisabled ? 'default' : 'pointer') + ';font-weight:bold;opacity:' + (sendButtonDisabled ? '0.7' : '1') + ';">' + (sendButtonDisabled ? 'Письмо отправлено' : 'Отправить письмо') + '</button>';
     html += '<button id="tm-ms-placement-draft-btn" type="button" ' + (draftButtonDisabled ? 'disabled ' : '') + 'style="padding:9px 12px;border:1px solid #1d4ed8;border-radius:8px;background:#eff6ff;color:#1d4ed8;cursor:' + (draftButtonDisabled ? 'default' : 'pointer') + ';font-weight:bold;opacity:' + (draftButtonDisabled ? '0.7' : '1') + ';">' + escapeHtml(draftButtonLabel) + '</button>';
@@ -1155,6 +1195,10 @@
     getPanelBody().querySelector('#tm-ms-placement-draft-btn').addEventListener('click', onPlacementSaveDraftClick);
     getPanelBody().querySelector('#tm-ms-placement-retry-state-btn').addEventListener('click', onPlacementRetryStateClick);
 
+    if (getPanelBody().querySelector('#tm-ms-placement-from')) {
+      getPanelBody().querySelector('#tm-ms-placement-from').addEventListener('change', onPlacementFromChange);
+    }
+
     if (useGmailSuggestions) {
       getPanelBody().querySelectorAll('.tm-ms-placement-suggested-email-btn').forEach(function (button) {
         button.addEventListener('click', onPlacementSuggestedEmailClick);
@@ -1176,6 +1220,7 @@
     state.placementMetaError = null;
     state.lastPlacementDownloadUrl = '';
     state.placementDraftId = '';
+    state.placementFromAddress = '';
     state.placementEmailSent = false;
     state.placementStateNeedsRetry = false;
   }
@@ -2113,8 +2158,13 @@
     return {
       to: panelBody.querySelector('#tm-ms-placement-to'),
       subject: panelBody.querySelector('#tm-ms-placement-subject'),
+      from: panelBody.querySelector('#tm-ms-placement-from'),
       body: panelBody.querySelector('#tm-ms-placement-body')
     };
+  }
+
+  function onPlacementFromChange(event) {
+    state.placementFromAddress = String((event && event.target && event.target.value) || '').trim().toLowerCase();
   }
 
   async function onPlacementSendEmailClick() {
@@ -2156,6 +2206,7 @@
     try {
       result = await sendPlacementEmail(orderId, settings, {
         to: recipients,
+        from: fields.from ? fields.from.value : '',
         subject: fields.subject ? fields.subject.value : '',
         body: fields.body ? fields.body.value : ''
       });
@@ -2267,6 +2318,7 @@
       result = await savePlacementDraft(orderId, settings, {
         draftId: state.placementDraftId,
         to: recipients,
+        from: fields.from ? fields.from.value : '',
         subject: fields.subject ? fields.subject.value : '',
         body: fields.body ? fields.body.value : ''
       });
