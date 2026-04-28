@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoySklad - Поиск писем по заказу поставщику
 // @namespace    https://tampermonkey.net/
-// @version      0.1.23
+// @version      0.1.24
 // @description  Ищет письма по заказу поставщику через Google Apps Script
 // @author       Codex + Spiralwave
 // @match        https://online.moysklad.ru/app/*
@@ -49,6 +49,8 @@
     placementDraftId: '',
     placementFromAddress: '',
     placementEmailSent: false,
+    placementRefreshIntervalId: null,
+    placementRefreshTimeoutId: null,
     placementOrganizationModalShown: false,
     isPanelOpen: false,
     activePanelMode: 'search'
@@ -280,16 +282,50 @@
     return 'NEW ORDER PO ' + String((data && data.orderNumber) || '').trim();
   }
 
-  function buildPlacementEmailBody(data) {
+  function getPlacementSenderTeamName(data, fromAddress) {
+    var normalizedFromAddress = String(fromAddress || '').trim().toLowerCase();
+    var senders = data && Array.isArray(data.emailSenders) ? data.emailSenders : [];
+    var matchedSender = null;
+    var senderLabel = '';
+
+    senders.some(function (sender) {
+      var address = String((sender && sender.address) || '').trim().toLowerCase();
+
+      if (address && address === normalizedFromAddress) {
+        matchedSender = sender;
+        return true;
+      }
+
+      return false;
+    });
+
+    senderLabel = String((matchedSender && matchedSender.label) || '').trim().toLowerCase();
+
+    if (normalizedFromAddress.indexOf('wiredtunes') !== -1 || senderLabel.indexOf('wired') !== -1) {
+      return 'Wired Tunes Team';
+    }
+
+    if (normalizedFromAddress.indexOf('sparrowssons') !== -1 || senderLabel.indexOf('sparrow') !== -1) {
+      return 'Sparrows Sons Team';
+    }
+
+    return 'Sparrows Sons Team';
+  }
+
+  function buildPlacementEmailBody(data, fromAddress) {
     var orderNumber = String((data && data.orderNumber) || '').trim();
+    var teamName = getPlacementSenderTeamName(data, fromAddress);
 
     return [
       'Hello,',
       '',
+      'I hope you are well.',
+      '',
       'Please find attached our new order PO ' + orderNumber + '.',
       'Could you please confirm the expected ready date and send us the order confirmation or proforma invoice?',
       '',
-      'Best regards'
+      'Best regards,',
+      teamName
     ].join('\n');
   }
 
@@ -1119,11 +1155,11 @@
       : (Array.isArray(data && data.emails) ? data.emails.join(', ') : '');
     var normalizedRecipients = normalizeRecipientList(recipients);
     var selectedSuggestedEmail = normalizedRecipients.length ? normalizedRecipients[0] : '';
-    var subject = buildPlacementEmailSubject(data);
-    var body = buildPlacementEmailBody(data);
     var attachmentFileName = String((data && data.attachmentFileName) || 'PO.xls');
     var emailSenders = data && Array.isArray(data.emailSenders) ? data.emailSenders : [];
     var selectedFromAddress = state.placementFromAddress || getDefaultPlacementFromAddress(data);
+    var subject = buildPlacementEmailSubject(data);
+    var body = buildPlacementEmailBody(data, selectedFromAddress);
     var sendButtonDisabled = state.placementEmailSent;
     var draftButtonDisabled = state.placementEmailSent;
     var draftButtonLabel = state.placementDraftId ? 'Обновить черновик' : 'Сохранить черновик';
@@ -1287,6 +1323,7 @@
   }
 
   function resetOrderState(orderId) {
+    cancelPlacementOrderRefresh();
     state.currentOrderId = orderId;
     state.searchPrefetchPromise = null;
     state.searchPrefetchResult = null;
@@ -1330,6 +1367,78 @@
     if (color) {
       element.style.color = color;
     }
+  }
+
+  function cancelPlacementOrderRefresh() {
+    if (state.placementRefreshIntervalId) {
+      window.clearInterval(state.placementRefreshIntervalId);
+      state.placementRefreshIntervalId = null;
+    }
+
+    if (state.placementRefreshTimeoutId) {
+      window.clearTimeout(state.placementRefreshTimeoutId);
+      state.placementRefreshTimeoutId = null;
+    }
+  }
+
+  function renderPlacementRefreshCountdown(secondsLeft, detailText) {
+    var note = String(detailText || 'Статус обновлен на "Размещен".').trim();
+
+    setPlacementMessage(
+      '#tm-ms-placement-send-note',
+      escapeHtml(note) +
+        '<div style="margin-top:8px;padding:8px 10px;border:1px solid #bbf7d0;border-radius:8px;background:#f0fdf4;color:#166534;">' +
+        'Страница заказа будет обновлена через <b id="tm-ms-placement-refresh-countdown">' +
+        escapeHtml(String(secondsLeft)) +
+        '</b> сек.' +
+        ' <button id="tm-ms-placement-cancel-refresh-btn" type="button" style="margin-left:8px;padding:4px 8px;border:1px solid #86efac;border-radius:6px;background:#fff;color:#166534;cursor:pointer;font-weight:bold;">Не обновлять</button>' +
+        '</div>',
+      '#166534'
+    );
+
+    bindPlacementRefreshCancelButton();
+  }
+
+  function bindPlacementRefreshCancelButton() {
+    var cancelButton = getPanelBody().querySelector('#tm-ms-placement-cancel-refresh-btn');
+
+    if (!cancelButton) {
+      return;
+    }
+
+    cancelButton.addEventListener('click', function () {
+      cancelPlacementOrderRefresh();
+      setPlacementMessage(
+        '#tm-ms-placement-send-note',
+        'Автообновление отменено. Статус в MoySklad уже обновлен; при необходимости обнови страницу вручную.',
+        '#166534'
+      );
+      setStatus('Автообновление отменено', 'ok', 'placement');
+    });
+  }
+
+  function schedulePlacementOrderRefresh(detailText) {
+    var secondsLeft = 5;
+
+    cancelPlacementOrderRefresh();
+    renderPlacementRefreshCountdown(secondsLeft, detailText);
+    setStatus('Статус обновлен, скоро обновлю страницу', 'ok', 'placement');
+
+    state.placementRefreshIntervalId = window.setInterval(function () {
+      var countdownNode;
+
+      secondsLeft -= 1;
+      countdownNode = getPanelBody().querySelector('#tm-ms-placement-refresh-countdown');
+
+      if (countdownNode) {
+        countdownNode.textContent = String(Math.max(secondsLeft, 0));
+      }
+    }, 1000);
+
+    state.placementRefreshTimeoutId = window.setTimeout(function () {
+      cancelPlacementOrderRefresh();
+      window.location.reload();
+    }, 5000);
   }
 
   function closePlacementOrganizationModal() {
@@ -2393,8 +2502,29 @@
     };
   }
 
+  function isPlacementGeneratedEmailBody(value, data) {
+    var bodyValue = String(value || '');
+    var senders = data && Array.isArray(data.emailSenders) ? data.emailSenders : [];
+
+    if (bodyValue === buildPlacementEmailBody(data, getDefaultPlacementFromAddress(data))) {
+      return true;
+    }
+
+    return senders.some(function (sender) {
+      return bodyValue === buildPlacementEmailBody(data, sender && sender.address);
+    });
+  }
+
   function onPlacementFromChange(event) {
+    var fields = getPlacementDraftFields();
+    var data = state.placementMetaResult && state.placementMetaResult.data ? state.placementMetaResult.data : null;
+    var previousBody = fields.body ? fields.body.value : '';
+
     state.placementFromAddress = String((event && event.target && event.target.value) || '').trim().toLowerCase();
+
+    if (fields.body && data && isPlacementGeneratedEmailBody(previousBody, data)) {
+      fields.body.value = buildPlacementEmailBody(data, state.placementFromAddress);
+    }
   }
 
   async function onPlacementSendEmailClick() {
@@ -2491,13 +2621,10 @@
         return;
       }
 
-      setPlacementMessage(
-        '#tm-ms-placement-send-note',
+      schedulePlacementOrderRefresh(
         'Письмо отправлено, статус обновлен на "Размещен".' +
-          (attachmentFileName ? ' Вложение: ' + escapeHtml(attachmentFileName) : ''),
-        '#166534'
+          (attachmentFileName ? ' Вложение: ' + attachmentFileName : '')
       );
-      setStatus('Письмо отправлено и размещено', 'ok', 'placement');
     } catch (error) {
       setPlacementSendButtonState(false, 'Отправить письмо');
       setPlacementDraftButtonState(false, getPlacementDraftButtonLabel());
@@ -2730,14 +2857,11 @@
 
       state.placementStateNeedsRetry = false;
       setPlacementRetryStateButtonVisible(false);
-      setPlacementMessage(
-        '#tm-ms-placement-send-note',
+      schedulePlacementOrderRefresh(
         result.data.alreadyPlaced
           ? 'Статус "Размещен" уже был установлен.'
-          : 'Статус обновлен на "Размещен".',
-        '#166534'
+          : 'Статус обновлен на "Размещен".'
       );
-      setStatus('Статус обновлен', 'ok', 'placement');
     } catch (error) {
       setPlacementRetryStateButtonVisible(true);
       setPlacementRetryStateButtonState(false, 'Повторить смену статуса');
